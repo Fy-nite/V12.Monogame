@@ -14,16 +14,16 @@ namespace V12.SampleGame
         {
             _gameroot = g;
 
-            Console.WriteLine("Welcome to the game engine");
+            Console.WriteLine("Bootstrap.Initialize called");
             V12.Basic.BasicRegistry.RegisterAll(_gameroot);
 
-            _gameroot.CreateWorld("MainWorld");
-
             var player = new Element { Name= "Player" };
-            //player.AddComponent(new TransformComponent { X = 0, Y = 0, Z = 0 });
             player.AddComponent(new PlayerComponent());
 
+            bool added = _gameroot.SelectedWorld != null;
             _gameroot.SelectedWorld?.AddElement(player);
+            _gameroot.SelectedWorld?.AddElement(Procedurals.GenBox("Box", new System.Numerics.Vector3(1, 1, 1)));
+            Console.WriteLine($"Bootstrap: SelectedWorld is null? {!added}");
         }
 
         public void Update(float deltaTime)
