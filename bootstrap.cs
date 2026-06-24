@@ -1,8 +1,9 @@
-﻿using V12.Core;
-using V12.Core.Core.Interfaces;
+﻿using System.Reflection;
 using V12.Basic;
 using V12.Basic.Components;
 using V12.Components;
+using V12.Core;
+using V12.Core.Core.Interfaces;
 using V12.WorldML;
 namespace V12.SampleGame
 {
@@ -11,6 +12,27 @@ namespace V12.SampleGame
         GameRoot _gameroot;
         
         public Bootstrap() { }
+        public string ReadResource(string name)
+        {
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name))
+            {
+                if (stream == null)
+                {
+                    Console.WriteLine($"Resource '{name}' not found.");
+                    return "";
+                }
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    string result = reader.ReadToEnd();
+                    return result;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Welcome to your game loop, this function init's your codebase to start
+        /// </summary>
+        /// <param name="g"></param>
         public void Initialize(GameRoot g)
         {
             _gameroot = g;
@@ -27,17 +49,7 @@ namespace V12.SampleGame
             Console.WriteLine($"Bootstrap: SelectedWorld is null? {!added}");
             try
             {
-                var parsedWorld = new WorldMLParser().Parse("""
-               
-
-                <World name="test_audio">
-                	
-                </World>
-                
-                
-                
-                
-                """);
+                var parsedWorld = new WorldMLParser().Parse(ReadResource("V12.SampleGame.Scenes.DemoScene.xml"));
                 Console.WriteLine($"[Bootstrap] Parsed world '{parsedWorld.Name}' with {(parsedWorld.Children?.Count ?? 0)} children");
                 if (parsedWorld.Children != null)
                 {

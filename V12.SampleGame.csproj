@@ -7,6 +7,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="DemoScene.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="DemoScene.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\V12.Basic\V12.Basic.csproj" />
     <ProjectReference Include="..\V12\V12.csproj" />
   </ItemGroup>
