@@ -45,6 +45,7 @@ namespace V12.SampleGame
             if (xrProvider != null)
             {
                 Console.WriteLine("[Bootstrap] XR mode — spawning XR player");
+                SpawnPhysicsTestWorld();
                 SpawnXrScene();
             }
             else
@@ -53,27 +54,51 @@ namespace V12.SampleGame
                 SpawnPhysicsTestWorld();
             }
 
+
+            var world = WorldLoader.LoadFromArchive("tbg.V12World");
+            _gameroot.SelectedWorld?.Root.AddRange(world.Root);
+
             Console.WriteLine($"Bootstrap: SelectedWorld is null? {_gameroot.SelectedWorld == null}");
         }
 
         private void SpawnXrScene()
         {
+            var world = _gameroot.SelectedWorld;
+            if (world == null) return;
+
             var xrPlayer = new Element { Name = "Player" };
             var xrPlayerComp = new PlayerComponent { IsXrMode = true };
             xrPlayer.AddComponent(xrPlayerComp);
-            _gameroot.SelectedWorld?.AddElement(xrPlayer);
+            world.AddElement(xrPlayer);
 
             var xrHead = MakeBox("XR_Head", new Vector3(0.1f, 0.1f, 0.06f));
             xrHead.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.Head });
-            _gameroot.SelectedWorld?.AddElement(xrHead);
+            xrPlayer.AddChild(xrHead);
 
             var xrLeft = MakeBox("XR_LeftHand", new Vector3(0.08f, 0.08f, 0.1f));
             xrLeft.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.LeftHand });
-            _gameroot.SelectedWorld?.AddElement(xrLeft);
+            xrPlayer.AddChild(xrLeft);
 
             var xrRight = MakeBox("XR_RightHand", new Vector3(0.08f, 0.08f, 0.1f));
             xrRight.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.RightHand });
-            _gameroot.SelectedWorld?.AddElement(xrRight);
+            xrPlayer.AddChild(xrRight);
+
+            // ---- Ground (reference plane so VR user isn't in a void) ----
+            var ground = new Element
+            {
+                Name = "Ground",
+                LocalTransform = new TRS { Position = new Vector3(0, -1, 0) }
+            };
+            ground.AddComponent(new ColliderComponent(MeshShape.Box, 40f, 1f, 40f));
+            ground.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
+            ground.AddComponent(new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f });
+            ground.AddComponent(new MeshRenderer());
+            world.AddElement(ground);
+
+           // ----Some reference boxes ----
+           //SpawnPhysicsBox("Box_A", new Vector3(-2, 0.5f, 0), new Vector3(1, 1, 1));
+           // SpawnPhysicsBox("Box_B", new Vector3(0, 0.5f, -3), new Vector3(1, 1, 1));
+           // SpawnPhysicsBox("Box_C", new Vector3(2, 0.5f, 0), new Vector3(1, 1, 1));
         }
 
         private void SpawnPhysicsTestWorld()
@@ -145,8 +170,8 @@ namespace V12.SampleGame
         private static Element MakeBox(string name, Vector3 scale)
         {
             var b = new Element { Name = name };
-            b.AddComponent(new ColliderComponent { Name = name });
-            var mesh = new MeshComponent { Shape = MeshShape.Box };
+            b.AddComponent(new ColliderComponent(MeshShape.Box, scale.X, scale.Y, scale.Z));
+            var mesh = new MeshComponent(MeshShape.Box, scale.X, scale.Y, scale.Z);
             b.AddComponent(mesh);
             b.AddComponent(new MeshRenderer { Mesh = mesh });
             return b;
