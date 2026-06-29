@@ -98,16 +98,41 @@ namespace V12.SampleGame
             xrRight.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.RightHand });
             xrRoot.AddChild(xrRight);
 
-            var ground = new Element
+            // Ground already created by SpawnPhysicsWorldOnly
+
+            // ── Demo button: spawns a physics box when pressed ──
+            var spawnCount = 0;
+            var button = new Element
             {
-                Name = "Ground",
-                LocalTransform = new TRS { Position = new Vector3(0, -1, 0) }
+                Name = "SpawnBoxButton",
+                LocalTransform = new TRS { Position = new Vector3(0, 1f, -2), Rotation = Quaternion.Identity, Scale = Vector3.One }
             };
-            ground.AddComponent(new ColliderComponent(MeshShape.Box, 40f, 1f, 40f));
-            ground.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
-            ground.AddComponent(new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f });
-            ground.AddComponent(new MeshRenderer());
-            world.AddElement(ground);
+            button.AddComponent(new ColliderComponent(MeshShape.Box, 0.3f, 0.3f, 0.3f));
+            button.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
+            var buttonMesh = new MeshComponent(MeshShape.Box, 0.3f, 0.3f, 0.3f);
+            button.AddComponent(buttonMesh);
+            button.AddComponent(new MeshRenderer { Mesh = buttonMesh });
+            button.AddComponent(new ButtonComponent
+            {
+                Label = "Spawn Box",
+                OnPressed = () =>
+                {
+                    spawnCount++;
+                    Console.WriteLine($"[Bootstrap] Spawning box #{spawnCount}");
+                    var box = new Element
+                    {
+                        Name = $"SpawnedBox_{spawnCount}",
+                        LocalTransform = new TRS { Position = new Vector3(0, 2.5f, -4), Rotation = Quaternion.Identity, Scale = Vector3.One }
+                    };
+                    box.AddComponent(new ColliderComponent(MeshShape.Box, 0.4f, 0.4f, 0.4f));
+                    box.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
+                    var boxMesh = new MeshComponent(MeshShape.Box, 0.4f, 0.4f, 0.4f);
+                    box.AddComponent(boxMesh);
+                    box.AddComponent(new MeshRenderer { Mesh = boxMesh });
+                    _gameroot.SelectedWorld?.AddElement(box);
+                }
+            });
+            world.AddElement(button);
         }
 
         private void SpawnPhysicsTestWorld()
@@ -122,12 +147,13 @@ namespace V12.SampleGame
             var ground = new Element
             {
                 Name = "Ground",
-                LocalTransform = new TRS { Position = new Vector3(0, -1, 0) }
+                LocalTransform = new TRS { Position = new Vector3(0, -1, 0), Rotation = Quaternion.Identity, Scale = Vector3.One }
             };
             ground.AddComponent(new ColliderComponent(MeshShape.Box, 40f, 1f, 40f));
             ground.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
-            ground.AddComponent(new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f });
-            ground.AddComponent(new MeshRenderer());
+            var groundMesh = new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f };
+            ground.AddComponent(groundMesh);
+            ground.AddComponent(new MeshRenderer { Mesh = groundMesh });
             _gameroot.SelectedWorld?.AddElement(ground);
 
             // ---- Stacked boxes ----
@@ -152,7 +178,7 @@ namespace V12.SampleGame
             var player = new Element
             {
                 Name = "Player",
-                LocalTransform = new TRS { Position = new Vector3(0, 1.5f, 0) }
+                LocalTransform = new TRS { Position = new Vector3(0, 1.5f, 0), Rotation = Quaternion.Identity, Scale = Vector3.One }
             };
             player.AddComponent(new PlayerComponent());
             player.AddComponent(new LocomotionComponent
@@ -175,12 +201,13 @@ namespace V12.SampleGame
             var e = new Element
             {
                 Name = name,
-                LocalTransform = new TRS { Position = position }
+                LocalTransform = new TRS { Position = position, Rotation = Quaternion.Identity, Scale = Vector3.One }
             };
             e.AddComponent(new ColliderComponent(MeshShape.Box, size.X, size.Y, size.Z));
             e.AddComponent(new PhysicsBodyComponent { IsKinematic = kinematic });
-            e.AddComponent(new MeshComponent { Shape = MeshShape.Box, Width = size.X, Height = size.Y, Depth = size.Z });
-            e.AddComponent(new MeshRenderer());
+            var mesh = new MeshComponent { Shape = MeshShape.Box, Width = size.X, Height = size.Y, Depth = size.Z };
+            e.AddComponent(mesh);
+            e.AddComponent(new MeshRenderer { Mesh = mesh });
             _gameroot.SelectedWorld?.AddElement(e);
         }
 
