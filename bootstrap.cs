@@ -46,6 +46,7 @@ namespace V12.SampleGame
                 Console.WriteLine("[Bootstrap] XR mode — spawning XR player");
                 SpawnPhysicsWorldOnly();
                 SpawnXrScene();
+                SpawnPortalPair();
             }
             else
             {
@@ -138,6 +139,7 @@ namespace V12.SampleGame
         private void SpawnPhysicsTestWorld()
         {
             SpawnPhysicsWorldOnly();
+            SpawnPortalPair();
             SpawnPlayer();
         }
 
@@ -194,6 +196,60 @@ namespace V12.SampleGame
                 ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
             });
             _gameroot.SelectedWorld?.AddElement(player);
+        }
+
+        private void SpawnPortalPair()
+        {
+            var world = _gameroot.SelectedWorld;
+            if (world == null) return;
+
+            // Portal A — entrance
+            var portalA = new Element
+            {
+                Name = "PortalA"
+            };
+            portalA.AddComponent(new TransformComponent(-4, 1.5f, -4));
+            portalA.AddComponent(new PortalComponent(exitPortalElementId: 0) { Width = 2f, Height = 2.5f, IsTeleport = true });
+
+            // Portal B — exit
+            var portalB = new Element
+            {
+                Name = "PortalB"
+            };
+            portalB.AddComponent(new TransformComponent(4, 1.5f, 4));
+            portalB.AddComponent(new PortalComponent(exitPortalElementId: 0) { Width = 2f, Height = 2.5f, IsTeleport = true });
+
+            world.AddElement(portalA);
+            world.AddElement(portalB);
+
+            // Link them bidirectionally after both are added so IDs are stable
+            var compA = portalA.GetComponent<PortalComponent>();
+            var compB = portalB.GetComponent<PortalComponent>();
+            compA.ExitPortalElementId = portalB.Id;
+            compB.ExitPortalElementId = portalA.Id;
+
+            // Add a portal link component for reference
+            portalA.AddComponent(new PortalLinkComponent(portalA.Id, portalB.Id));
+
+            // Portal frames (visual walls with holes matching portal size)
+            SpawnPortalFrame("PortalAFrame", new Vector3(-4, 1.5f, -4.5f), new Vector3(3f, 3f, 0.2f));
+            SpawnPortalFrame("PortalBFrame", new Vector3(4, 1.5f, 4.5f), new Vector3(3f, 3f, 0.2f));
+
+            Console.WriteLine($"[Bootstrap] Portal pair created: A={portalA.Id} <-> B={portalB.Id}");
+        }
+
+        private void SpawnPortalFrame(string name, Vector3 position, Vector3 size)
+        {
+            var e = new Element
+            {
+                Name = name,
+                LocalTransform = new TRS { Position = position, Rotation = Quaternion.Identity, Scale = Vector3.One }
+            };
+            var mesh = new MeshComponent(MeshShape.Box, size.X, size.Y, size.Z);
+            e.AddComponent(mesh);
+            e.AddComponent(new MeshRenderer { Mesh = mesh });
+            e.AddComponent(new MaterialComponent { R = 0.3f, G = 0.3f, B = 0.5f, A = 1f, Metallic = 0.8f, Roughness = 0.2f });
+            _gameroot.SelectedWorld?.AddElement(e);
         }
 
         private void SpawnPhysicsBox(string name, Vector3 position, Vector3 size, bool kinematic = false)
