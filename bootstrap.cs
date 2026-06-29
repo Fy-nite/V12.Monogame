@@ -6,7 +6,6 @@ using V12.Components;
 using V12.Components.Renderables;
 using V12.Core;
 using V12.Core.Core.Interfaces;
-using V12.Core.Input;
 using V12.Core.Interfaces.Renderer;
 using V12.WorldML;
 
@@ -41,11 +40,11 @@ namespace V12.SampleGame
             Console.WriteLine("Bootstrap.Initialize called");
             BasicRegistry.RegisterAll(_gameroot);
 
-            var xrProvider = g.Registry.Get<IVRInputProvider>();
-            if (xrProvider != null)
+            var xrService = g.Registry.Get("XRTrackingService");
+            if (xrService != null)
             {
                 Console.WriteLine("[Bootstrap] XR mode — spawning XR player");
-                SpawnPhysicsTestWorld();
+                SpawnPhysicsWorldOnly();
                 SpawnXrScene();
             }
             else
@@ -54,12 +53,20 @@ namespace V12.SampleGame
                 SpawnPhysicsTestWorld();
             }
 
-
-            var world = WorldLoader.LoadFromArchive("tbg.V12World");
-            _gameroot.SelectedWorld?.Root.AddRange(world.Root);
+            try
+            {
+                Console.WriteLine("Loading World");
+                var world = WorldLoader.LoadFromArchive("tbg.V12World");
+                _gameroot.SelectedWorld?.Root.AddRange(world.Root);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Exception loading world: {ex}"); Console.WriteLine(ex.Message);
+            }
 
             Console.WriteLine($"Bootstrap: SelectedWorld is null? {_gameroot.SelectedWorld == null}");
         }
+        
 
         private void SpawnXrScene()
         {
@@ -69,21 +76,28 @@ namespace V12.SampleGame
             var xrPlayer = new Element { Name = "Player" };
             var xrPlayerComp = new PlayerComponent { IsXrMode = true };
             xrPlayer.AddComponent(xrPlayerComp);
+            xrPlayer.AddComponent(new VRPlayerComponent());
             world.AddElement(xrPlayer);
 
+            var xrRoot = new Element { Name = "XR_Root" };
+            xrRoot.AddComponent(new XRRootComponent());
+            xrPlayer.AddChild(xrRoot);
+
             var xrHead = MakeBox("XR_Head", new Vector3(0.1f, 0.1f, 0.06f));
+            xrHead.AddComponent(new XRHeadComponent());
             xrHead.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.Head });
-            xrPlayer.AddChild(xrHead);
+            xrRoot.AddChild(xrHead);
 
             var xrLeft = MakeBox("XR_LeftHand", new Vector3(0.08f, 0.08f, 0.1f));
+            xrLeft.AddComponent(new XRHandComponent(HandSide.Left));
             xrLeft.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.LeftHand });
-            xrPlayer.AddChild(xrLeft);
+            xrRoot.AddChild(xrLeft);
 
             var xrRight = MakeBox("XR_RightHand", new Vector3(0.08f, 0.08f, 0.1f));
+            xrRight.AddComponent(new XRHandComponent(HandSide.Right));
             xrRight.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.RightHand });
-            xrPlayer.AddChild(xrRight);
+            xrRoot.AddChild(xrRight);
 
-            // ---- Ground (reference plane so VR user isn't in a void) ----
             var ground = new Element
             {
                 Name = "Ground",
@@ -94,36 +108,16 @@ namespace V12.SampleGame
             ground.AddComponent(new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f });
             ground.AddComponent(new MeshRenderer());
             world.AddElement(ground);
-
-           // ----Some reference boxes ----
-           //SpawnPhysicsBox("Box_A", new Vector3(-2, 0.5f, 0), new Vector3(1, 1, 1));
-           // SpawnPhysicsBox("Box_B", new Vector3(0, 0.5f, -3), new Vector3(1, 1, 1));
-           // SpawnPhysicsBox("Box_C", new Vector3(2, 0.5f, 0), new Vector3(1, 1, 1));
         }
 
         private void SpawnPhysicsTestWorld()
         {
-            // ---- Player ----
-            var player = new Element
-            {
-                Name = "Player",
-                LocalTransform = new TRS { Position = new Vector3(0, 1.5f, 0) }
-            };
-            player.AddComponent(new PlayerComponent());
-            player.AddComponent(new LocomotionComponent
-            {
-                MoveSpeed = 5f,
-                JumpStrength = 6f,
-                Gravity = 20f
-            });
-            player.AddComponent(new ColliderComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f));
-            player.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
-            player.AddComponent(new ScriptComponent
-            {
-                ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
-            });
-            _gameroot.SelectedWorld?.AddElement(player);
+            SpawnPhysicsWorldOnly();
+            SpawnPlayer();
+        }
 
+        private void SpawnPhysicsWorldOnly()
+        {
             // ---- Ground ----
             var ground = new Element
             {
@@ -151,6 +145,29 @@ namespace V12.SampleGame
             SpawnPhysicsBox("Wall_S", new Vector3(0, 1, 10), new Vector3(20, 2, 0.5f), kinematic: true);
             SpawnPhysicsBox("Wall_E", new Vector3(10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
             SpawnPhysicsBox("Wall_W", new Vector3(-10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
+        }
+
+        private void SpawnPlayer()
+        {
+            var player = new Element
+            {
+                Name = "Player",
+                LocalTransform = new TRS { Position = new Vector3(0, 1.5f, 0) }
+            };
+            player.AddComponent(new PlayerComponent());
+            player.AddComponent(new LocomotionComponent
+            {
+                MoveSpeed = 5f,
+                JumpStrength = 6f,
+                Gravity = 20f
+            });
+            player.AddComponent(new ColliderComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f));
+            player.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
+            player.AddComponent(new ScriptComponent
+            {
+                ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
+            });
+            _gameroot.SelectedWorld?.AddElement(player);
         }
 
         private void SpawnPhysicsBox(string name, Vector3 position, Vector3 size, bool kinematic = false)
