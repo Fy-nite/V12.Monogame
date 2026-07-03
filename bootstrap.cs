@@ -46,7 +46,7 @@ namespace V12.SampleGame
                 Console.WriteLine("[Bootstrap] XR mode — spawning XR player");
                 SpawnPhysicsWorldOnly();
                 SpawnXrScene();
-                SpawnPortalPair();
+                //SpawnPortalPair();
             }
             else
             {
@@ -139,7 +139,7 @@ namespace V12.SampleGame
         private void SpawnPhysicsTestWorld()
         {
             SpawnPhysicsWorldOnly();
-            SpawnPortalPair();
+            //SpawnPortalPair();
             SpawnPlayer();
         }
 
@@ -158,21 +158,21 @@ namespace V12.SampleGame
             ground.AddComponent(new MeshRenderer { Mesh = groundMesh });
             _gameroot.SelectedWorld?.AddElement(ground);
 
-            // ---- Stacked boxes ----
-            SpawnPhysicsBox("Box_A", new Vector3(-2, 0.5f, 0), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_B", new Vector3(0, 0.5f, -3), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_C", new Vector3(2, 0.5f, 0), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_D", new Vector3(0, 1.5f, -3), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_E", new Vector3(-4, 0.5f, -2), new Vector3(1.5f, 0.5f, 1.5f));
+            //// ---- Stacked boxes ----
+            //SpawnPhysicsBox("Box_A", new Vector3(-2, 0.5f, 0), new Vector3(1, 1, 1));
+            //SpawnPhysicsBox("Box_B", new Vector3(0, 0.5f, -3), new Vector3(1, 1, 1));
+            //SpawnPhysicsBox("Box_C", new Vector3(2, 0.5f, 0), new Vector3(1, 1, 1));
+            //SpawnPhysicsBox("Box_D", new Vector3(0, 1.5f, -3), new Vector3(1, 1, 1));
+            //SpawnPhysicsBox("Box_E", new Vector3(-4, 0.5f, -2), new Vector3(1.5f, 0.5f, 1.5f));
 
-            // ---- Ramp ----
-            SpawnPhysicsBox("Ramp", new Vector3(4, 0f, 0), new Vector3(3f, 0.2f, 2f), kinematic: true);
+            //// ---- Ramp ----
+            //SpawnPhysicsBox("Ramp", new Vector3(4, 0f, 0), new Vector3(3f, 0.2f, 2f), kinematic: true);
 
-            // ---- Walls around play area ----
-            SpawnPhysicsBox("Wall_N", new Vector3(0, 1, -10), new Vector3(20, 2, 0.5f), kinematic: true);
-            SpawnPhysicsBox("Wall_S", new Vector3(0, 1, 10), new Vector3(20, 2, 0.5f), kinematic: true);
-            SpawnPhysicsBox("Wall_E", new Vector3(10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
-            SpawnPhysicsBox("Wall_W", new Vector3(-10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
+            //// ---- Walls around play area ----
+            //SpawnPhysicsBox("Wall_N", new Vector3(0, 1, -10), new Vector3(20, 2, 0.5f), kinematic: true);
+            //SpawnPhysicsBox("Wall_S", new Vector3(0, 1, 10), new Vector3(20, 2, 0.5f), kinematic: true);
+            //SpawnPhysicsBox("Wall_E", new Vector3(10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
+            //SpawnPhysicsBox("Wall_W", new Vector3(-10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
         }
 
         private void SpawnPlayer()
