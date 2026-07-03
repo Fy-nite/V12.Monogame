@@ -191,6 +191,11 @@ namespace V12.SampleGame
             });
             player.AddComponent(new ColliderComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f));
             player.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
+            
+            var playerMesh = new MeshComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f);
+            player.AddComponent(playerMesh);
+            player.AddComponent(new MeshRenderer { Mesh = playerMesh });
+            
             player.AddComponent(new ScriptComponent
             {
                 ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
