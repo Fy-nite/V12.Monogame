@@ -200,7 +200,8 @@ namespace V12.SampleGame
             {
                 ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
             });
-            _gameroot.SelectedWorld?.AddElement(player);
+            _gameroot.PersistentWorld.AddElement(player);
+            Console.WriteLine("[Bootstrap] Player added to PersistentWorld (survives world switches).");
         }
 
         private void SpawnPortalPair()
