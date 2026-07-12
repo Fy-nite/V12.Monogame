@@ -191,6 +191,8 @@ namespace V12.SampleGame
             });
             player.AddComponent(new ColliderComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f));
             player.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
+            // Without this, LocomotionSystem falls through to the direct
+            // position-update path (the physics velocity path is a no-op).
             
             var playerMesh = new MeshComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f);
             player.AddComponent(playerMesh);
