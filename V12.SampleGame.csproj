@@ -15,8 +15,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\V12.Basic\V12.Basic.csproj" />
-    <ProjectReference Include="..\V12\V12.csproj" />
+    <PackageReference Include="Finite.V12" Version="1.0.0" />
+    <PackageReference Include="Finite.V12.Basic" Version="1.0.0" />
   </ItemGroup>
 
 </Project>
