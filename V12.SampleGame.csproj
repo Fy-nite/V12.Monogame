@@ -15,8 +15,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Finite.V12" Version="1.0.0" />
-    <PackageReference Include="Finite.V12.Basic" Version="1.0.0" />
+    <Compile Remove="libs/**" />
+    <Compile Remove="libs\**" />
+    <EmbeddedResource Remove="libs\**" />
+    <None Remove="libs\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="libs\V12.Basic\V12.Basic.csproj" />
   </ItemGroup>
 
 </Project>

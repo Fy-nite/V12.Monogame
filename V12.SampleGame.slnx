@@ -1,4 +1,5 @@
 <Solution>
-  <Project Path="../V12.Basic/V12.Basic.csproj" />
+  <Project Path="libs/V12.basic/libs/V12/V12.csproj" />
+  <Project Path="libs/V12.Basic/V12.Basic.csproj" />
   <Project Path="V12.SampleGame.csproj" />
 </Solution>
