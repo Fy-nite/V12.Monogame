@@ -9,6 +9,7 @@ using V12.Components.Renderables;
 using V12.Core;
 using V12.Core.Core.Interfaces;
 using V12.Core.Interfaces.Renderer;
+using V12.Core.UI;
 using V12.Pak;
 using V12.WorldML;
 
@@ -73,6 +74,36 @@ namespace V12.SampleGame
 
             LoadContentPaks();
             BindDemoScene();
+            BuildHud();
+        }
+
+        /// <summary>
+        /// Builds a small screen-space HUD through the registered UIBuilder. The UIBuilder root
+        /// (a CanvasComponent) is captured by GameRoot.CaptureUI and handed to the IUIRenderer
+        /// (Gum) — proving the V12 → UI-renderer hand-off and the click → V12 callback loop.
+        /// </summary>
+        private void BuildHud()
+        {
+            if (_gameroot.Registry.Get("UIBuilder")?.ServiceInstance is not IUIBuilder ui) return;
+
+            var canvas = ui.Root.GetComponent<V12.Components.UI.CanvasComponent>();
+            if (canvas != null)
+            {
+                canvas.ScreenSpace = true; // first pass renders screen-space canvases
+            }
+
+            var layout = ui.VLayout(ui.Root, "HudLayout", spacing: 8f, padding: 12f);
+            ui.Label(layout, "HudTitle", "V12 + Gum HUD");
+
+            int clicks = 0;
+            ui.Button(layout, "HudButton", () =>
+            {
+                clicks++;
+                Console.WriteLine($"[HUD] button clicked x{clicks}");
+                _gameroot.SelectedWorld?.SpawnBox(new Vector3(0f, 4f, -4f), 0.5f, 0.5f, 0.5f, dynamic: true, name: $"HudBox_{clicks}");
+            });
+
+            Console.WriteLine("[Bootstrap] HUD built via UIBuilder (canvas captured for Gum)");
         }
 
         /// <summary>
@@ -140,6 +171,15 @@ namespace V12.SampleGame
                     Console.WriteLine($"[Bind] enemy '{e.Name}' given 50 HP");
                 })
                 .On<TagComponent>("DemoButton", t => Console.WriteLine($"[Bind] DemoButton tags: [{t.Tags}]"))
+                .On<ButtonComponent>("DemoButton", b =>
+                {
+                    b.OnPressed = () =>
+                    {
+                        Console.WriteLine($"[Button] '{b.Label}' clicked — spawning a box");
+                        world.SpawnBox(new Vector3(0f, 4f, -4f), 0.5f, 0.5f, 0.5f, dynamic: true, name: "ButtonSpawn");
+                    };
+                    Console.WriteLine($"[Bind] wired '{b.Label}'.OnPressed");
+                })
                 .OnPath("DemoEnemies/Enemy_A", e => Console.WriteLine($"[Bind] path 'DemoEnemies/Enemy_A' matched '{e.Name}'"))
                 .Auto();
         }

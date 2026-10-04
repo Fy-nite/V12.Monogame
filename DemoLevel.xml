@@ -6,12 +6,13 @@
 -->
 <World name="DemoLevel">
 
-  <!-- Bound by name: "DemoButton" -->
+  <!-- Bound by name: "DemoButton". Kinematic body so the aim ray can hit it. -->
   <Element name="DemoButton">
-    <TransformComponent x="0" y="1.0" z="-3" />
+    <TransformComponent x="0" y="2.2" z="-3" />
     <Component type="MeshComponent" name="demo_button_mesh" Shape="Box" Width="0.6" Height="0.6" Depth="0.6" />
     <Component type="MeshRenderer" Mesh="demo_button_mesh" />
     <ColliderComponent Shape="Box" Width="0.6" Height="0.6" Depth="0.6" />
+    <PhysicsBodyComponent IsKinematic="true" />
     <ButtonComponent Label="Bound Button" />
     <TagComponent Tags="demo,interactive" />
   </Element>

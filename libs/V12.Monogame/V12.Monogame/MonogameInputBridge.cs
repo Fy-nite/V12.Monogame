@@ -11,8 +11,9 @@ namespace V12.Monogame
     /// raw mouse deltas to the local player for mouse-look.
     ///
     /// Movement: WASD · Look: arrow keys / mouse · Jump: Space · Run: Shift ·
-    /// Fly toggle: F · Fly up/down: Q/E. Mouse capture (click to lock, Esc to release)
-    /// is handled by the host; when captured, mouse deltas drive mouse-look.
+    /// Interact: left mouse / E · Fly toggle: F · Fly up/down: Q/C. Mouse capture
+    /// (click to lock, Esc to release) is handled by the host; when captured, mouse
+    /// deltas drive mouse-look.
     /// </summary>
     public sealed class MonogameInputBridge
     {
@@ -26,6 +27,7 @@ namespace V12.Monogame
         private MouseState _previousMouse;
         private bool _mouseInitialized;
         private bool _wasLocked;
+        private bool _interactWasDown;
 
         public MonogameInputBridge(GameRoot root, MonogameV12Renderer renderer)
         {
@@ -35,7 +37,7 @@ namespace V12.Monogame
             _previousKeys = Keyboard.GetState();
         }
 
-        public void Update(float deltaTime)
+        public void Update(float deltaTime, bool windowActive)
         {
             _input ??= _root.Registry.Get<InputService>();
             _player ??= _root.FindComponent<PlayerComponent>();
@@ -43,6 +45,17 @@ namespace V12.Monogame
 
             var keys = Keyboard.GetState();
             var mouse = Mouse.GetState();
+
+            if (!windowActive)
+            {
+                // Window unfocused: don't drive movement/look, and resync so regaining focus
+                // doesn't produce a one-frame jump (from a stale cursor / held key).
+                _mouseInitialized = false;
+                _interactWasDown = false;
+                _previousKeys = keys;
+                _previousMouse = mouse;
+                return;
+            }
 
             // Axes are sent EVERY frame, including explicit 0 on release. Some engine
             // systems latch axis state and only update on incoming events (e.g.
@@ -63,12 +76,24 @@ namespace V12.Monogame
 
             // Fly.
             SendAxis("fly_up", keys.IsKeyDown(Keys.Q));
-            SendAxis("fly_down", keys.IsKeyDown(Keys.E));
+            SendAxis("fly_down", keys.IsKeyDown(Keys.C));
 
             // Buttons (edge-triggered).
             SendButton("jump", Keys.Space, keys);
             SendButton("run", Keys.LeftShift, keys);
             SendButton("fly_toggle", Keys.F, keys);
+
+            // Interact (aim at a ButtonComponent and press): left mouse or E.
+            bool interact = keys.IsKeyDown(Keys.E) || mouse.LeftButton == ButtonState.Pressed;
+            if (interact != _interactWasDown)
+            {
+                _input?.SendEvent(new InputEvent
+                {
+                    Type = interact ? InputEventType.ButtonDown : InputEventType.ButtonUp,
+                    Name = "interact",
+                });
+                _interactWasDown = interact;
+            }
 
             SendMouseLook(mouse);
 

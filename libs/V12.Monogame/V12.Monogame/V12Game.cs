@@ -17,10 +17,11 @@ namespace V12.Monogame
 
         private GameRoot? _root;
         private MonogameV12Renderer? _renderer;
+        private GumUIRenderer? _uiRenderer;
         private MonogameInputBridge? _input;
 
-        private MouseState _previousMouse;
         private bool _escapeWasDown;
+        private bool _tabWasDown;
         private bool _loggedCaptureHint;
 
         public V12Game(Action<GameRoot> configureServices)
@@ -52,6 +53,11 @@ namespace V12.Monogame
             _renderer = new MonogameV12Renderer(GraphicsDevice, _root);
             _root.Registry.Register("IRenderer", _renderer);
 
+            // UI renderer (Gum) — registered before Initialize so GameRoot resolves it and
+            // hands it the captured UIFrame each dirty frame.
+            _uiRenderer = new GumUIRenderer(this, _root);
+            _root.Registry.Register("IUIRenderer", _uiRenderer);
+
             // Host-supplied game services (e.g. the sample Bootstrap).
             _configureServices(_root);
 
@@ -68,10 +74,17 @@ namespace V12.Monogame
         {
             float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
+            // Stop tracking/releasing the mouse when the window loses focus.
+            if (!IsActive && _renderer?.LockMouse == true)
+                SetMouseCapture(false);
+
             HandleMouseCapture();
 
-            _input?.Update(deltaTime);
+            _input?.Update(deltaTime, IsActive);
             _root?.V12Tick(deltaTime);
+
+            // Drive Gum (pointer/keyboard) after the frame's UI has been handed over.
+            _uiRenderer?.Update(gameTime);
 
             base.Update(gameTime);
         }
@@ -79,6 +92,9 @@ namespace V12.Monogame
         protected override void Draw(GameTime gameTime)
         {
             _renderer?.DrawFrame();
+
+            // Gum draws the UI as a 2D overlay on top of the 3D pass.
+            _uiRenderer?.Draw();
 
             base.Draw(gameTime);
         }
@@ -90,20 +106,20 @@ namespace V12.Monogame
         }
 
         /// <summary>
-        /// Click inside the window to capture the mouse (hidden + confined, so looking
-        /// around never hits a screen edge); Esc releases it. Movement keys work either way.
+        /// Tab toggles mouse capture (hidden + confined, for looking around); Esc releases it.
+        /// Capture is deliberately NOT bound to left-click, so left-click stays free to press
+        /// Gum UI controls. Movement keys work either way.
         /// </summary>
         private void HandleMouseCapture()
         {
             if (_renderer == null) return;
 
             var keys = Keyboard.GetState();
-            var mouse = Mouse.GetState();
 
             if (!_loggedCaptureHint)
             {
                 _loggedCaptureHint = true;
-                Console.WriteLine("[V12Game] Click the window to capture the mouse; Esc to release. WASD to move.");
+                Console.WriteLine("[V12Game] Tab toggles mouse capture; Esc releases it. WASD to move.");
             }
 
             // Esc releases capture.
@@ -112,14 +128,11 @@ namespace V12.Monogame
                 SetMouseCapture(false);
             _escapeWasDown = escapeDown;
 
-            // Left-click inside the window captures it.
-            bool leftDown = mouse.LeftButton == ButtonState.Pressed;
-            bool leftWasDown = _previousMouse.LeftButton == ButtonState.Pressed;
-            if (leftDown && !leftWasDown && !_renderer.LockMouse
-                && GraphicsDevice.Viewport.Bounds.Contains(mouse.X, mouse.Y))
-                SetMouseCapture(true);
-
-            _previousMouse = mouse;
+            // Tab toggles capture.
+            bool tabDown = keys.IsKeyDown(Keys.Tab);
+            if (tabDown && !_tabWasDown)
+                SetMouseCapture(!_renderer.LockMouse);
+            _tabWasDown = tabDown;
         }
 
         private void SetMouseCapture(bool locked)
