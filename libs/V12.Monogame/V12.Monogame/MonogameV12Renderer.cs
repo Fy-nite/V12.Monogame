@@ -64,7 +64,7 @@ namespace V12.Monogame
             };
             _effect.EnableDefaultLighting();
             _effect.DiffuseColor = Vector3.One;
-
+            _effect.SpecularColor = Vector3.Zero;
             _fpsWatch.Start();
         }
 

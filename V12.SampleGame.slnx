@@ -5,5 +5,6 @@
   <Project Path="libs/V12.Monogame/V12.Monogame.DX/V12.Monogame.DX.csproj" />
   <Project Path="libs/V12.Monogame/V12.Monogame.GL/V12.Monogame.GL.csproj" />
   <Project Path="libs/V12.Monogame/V12.Monogame/V12.Monogame.csproj" />
+  <Project Path="libs/V12.Pak/V12.Pak.csproj" />
   <Project Path="V12.SampleGame.csproj" />
 </Solution>

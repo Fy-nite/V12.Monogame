@@ -1,3 +1,6 @@
 [submodule "libs/V12.basic"]
 	path = libs/V12.basic
 	url = https://github.com/Fy-nite/V12.Basic
+[submodule "libs/V12.Pak"]
+	path = libs/V12.Pak
+	url = https://github.com/Fy-nite/V12.Pak.git

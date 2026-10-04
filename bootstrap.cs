@@ -1,12 +1,15 @@
 ﻿using System.Numerics;
 using System.Reflection;
 using V12.Basic;
+using V12.Basic.Building;
 using V12.Basic.Components;
+using V12.Basic.Scene;
 using V12.Components;
 using V12.Components.Renderables;
 using V12.Core;
 using V12.Core.Core.Interfaces;
 using V12.Core.Interfaces.Renderer;
+using V12.Pak;
 using V12.WorldML;
 
 namespace V12.SampleGame
@@ -14,6 +17,7 @@ namespace V12.SampleGame
     public class Bootstrap : IGameService
     {
         GameRoot _gameroot = default!;
+        readonly List<V12PakLoader> _pakLoaders = new();
 
         public Bootstrap() { }
 
@@ -66,6 +70,78 @@ namespace V12.SampleGame
             }
 
             Console.WriteLine($"Bootstrap: SelectedWorld is null? {_gameroot.SelectedWorld == null}");
+
+            LoadContentPaks();
+            BindDemoScene();
+        }
+
+        /// <summary>
+        /// Loads a <c>.v12pak</c> if one is present (from the V12_PAK env var, or
+        /// content.v12pak beside the executable). Pak worlds land on <see cref="GameRoot.Worlds"/>;
+        /// the returned loaders are kept alive so the pak's assets remain mounted.
+        /// </summary>
+        private void LoadContentPaks()
+        {
+            var pakPath = Environment.GetEnvironmentVariable("V12_PAK")
+                          ?? Path.Combine(AppContext.BaseDirectory, "content.v12pak");
+
+            if (!File.Exists(pakPath))
+            {
+                Console.WriteLine($"[Bootstrap] No pak loaded (looked for '{pakPath}'). Set V12_PAK or drop a content.v12pak.");
+                return;
+            }
+
+            try
+            {
+                var loader = _gameroot.LoadPak(pakPath, V12PakOptions.FullTrust);
+                _pakLoaders.Add(loader);
+                Console.WriteLine($"[Bootstrap] Loaded pak '{Path.GetFileName(pakPath)}' ({loader.Results.Count} step(s)).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Bootstrap] Pak load failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Loads the embedded WorldML demo scene, merges its elements into the active world, then
+        /// binds C# handlers to its named/tagged elements — the editor-authored-scene → code loop.
+        /// </summary>
+        private void BindDemoScene()
+        {
+            var world = _gameroot.SelectedWorld;
+            if (world == null) return;
+
+            try
+            {
+                var demo = _gameroot.LoadSceneFromResource(Assembly.GetExecutingAssembly(), "V12.SampleGame.DemoLevel.xml", worldName: "DemoLevel", select: false);
+                var container = demo.Root[0];
+                foreach (var child in container.Children.ToArray())
+                {
+                    container.RemoveChild(child);
+                    world.AddElement(child);
+                }
+
+                // WorldML writes TransformComponents; reconcile LocalTransform so physics
+                // bodies are created at the scene-placed positions.
+                world.SyncLocalTransforms();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Bootstrap] Demo scene unavailable: {ex.Message}");
+                return;
+            }
+
+            world.Bind()
+                .On("DemoButton", e => Console.WriteLine($"[Bind] found '{e.Name}' ({e.Components.Count} components)"))
+                .OnTag("enemy", e =>
+                {
+                    e.AddComponent(new HealthComponent(50));
+                    Console.WriteLine($"[Bind] enemy '{e.Name}' given 50 HP");
+                })
+                .On<TagComponent>("DemoButton", t => Console.WriteLine($"[Bind] DemoButton tags: [{t.Tags}]"))
+                .OnPath("DemoEnemies/Enemy_A", e => Console.WriteLine($"[Bind] path 'DemoEnemies/Enemy_A' matched '{e.Name}'"))
+                .Auto();
         }
         
 
@@ -103,16 +179,7 @@ namespace V12.SampleGame
 
             // ── Demo button: spawns a physics box when pressed ──
             var spawnCount = 0;
-            var button = new Element
-            {
-                Name = "SpawnBoxButton",
-                LocalTransform = new TRS { Position = new Vector3(0, 1f, -2), Rotation = Quaternion.Identity, Scale = Vector3.One }
-            };
-            button.AddComponent(new ColliderComponent(MeshShape.Box, 0.3f, 0.3f, 0.3f));
-            button.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
-            var buttonMesh = new MeshComponent(MeshShape.Box, 0.3f, 0.3f, 0.3f);
-            button.AddComponent(buttonMesh);
-            button.AddComponent(new MeshRenderer { Mesh = buttonMesh });
+            var button = world.SpawnBox(new Vector3(0f, 1f, -2f), 0.3f, 0.3f, 0.3f, dynamic: false, name: "SpawnBoxButton");
             button.AddComponent(new ButtonComponent
             {
                 Label = "Spawn Box",
@@ -120,20 +187,9 @@ namespace V12.SampleGame
                 {
                     spawnCount++;
                     Console.WriteLine($"[Bootstrap] Spawning box #{spawnCount}");
-                    var box = new Element
-                    {
-                        Name = $"SpawnedBox_{spawnCount}",
-                        LocalTransform = new TRS { Position = new Vector3(0, 2.5f, -4), Rotation = Quaternion.Identity, Scale = Vector3.One }
-                    };
-                    box.AddComponent(new ColliderComponent(MeshShape.Box, 0.4f, 0.4f, 0.4f));
-                    box.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
-                    var boxMesh = new MeshComponent(MeshShape.Box, 0.4f, 0.4f, 0.4f);
-                    box.AddComponent(boxMesh);
-                    box.AddComponent(new MeshRenderer { Mesh = boxMesh });
-                    _gameroot.SelectedWorld?.AddElement(box);
+                    world.SpawnBox(new Vector3(0f, 2.5f, -4f), 0.4f, 0.4f, 0.4f, dynamic: true, name: $"SpawnedBox_{spawnCount}");
                 }
             });
-            world.AddElement(button);
         }
 
         private void SpawnPhysicsTestWorld()
@@ -145,65 +201,27 @@ namespace V12.SampleGame
 
         private void SpawnPhysicsWorldOnly()
         {
-            // ---- Ground ----
-            var ground = new Element
-            {
-                Name = "Ground",
-                LocalTransform = new TRS { Position = new Vector3(0, -1, 0), Rotation = Quaternion.Identity, Scale = Vector3.One }
-            };
-            ground.AddComponent(new ColliderComponent(MeshShape.Box, 40f, 1f, 40f));
-            ground.AddComponent(new PhysicsBodyComponent { IsKinematic = true });
-            var groundMesh = new MeshComponent { Shape = MeshShape.Box, Width = 40f, Height = 1f, Depth = 40f };
-            ground.AddComponent(groundMesh);
-            ground.AddComponent(new MeshRenderer { Mesh = groundMesh });
-            _gameroot.SelectedWorld?.AddElement(ground);
+            var world = _gameroot.SelectedWorld;
+            if (world == null) return;
+
+            // ---- Ground (top surface at y = -0.5) ----
+            world.AddGround(size: 40f, thickness: 1f, topY: -0.5f);
 
             // ---- Test objects ----
-
-            // A little tower of dynamic boxes, to the left of the spawn point.
-            SpawnPhysicsBox("Box_A", new Vector3(-3, 0.5f, 0), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_B", new Vector3(-3, 1.5f, 0), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_C", new Vector3(-3, 2.5f, 0), new Vector3(1, 1, 1));
-
-            // A few loose boxes to knock around.
-            SpawnPhysicsBox("Box_D", new Vector3(3, 0.5f, -2), new Vector3(1, 1, 1));
-            SpawnPhysicsBox("Box_E", new Vector3(4.5f, 0.5f, 1.5f), new Vector3(0.8f, 0.8f, 0.8f));
-
-            // A tilted static ramp (slopes down toward +Z) to slide boxes and the player.
-            SpawnPhysicsBox("Ramp", new Vector3(6, 0.35f, 0), new Vector3(3, 0.3f, 4), kinematic: true, rotationDegrees: new Vector3(-18f, 0, 0));
-
-            // A static raised platform.
-            SpawnPhysicsBox("Platform", new Vector3(-7, 1.6f, -4), new Vector3(4, 0.4f, 4), kinematic: true);
+            world.SpawnBoxStack(new Vector3(-3f, 0.5f, 0f), 3, 1f, namePrefix: "Box");                    // tower
+            world.SpawnBox(new Vector3(3f, 0.5f, -2f), dynamic: true, name: "Box_D");                     // loose boxes
+            world.SpawnBox(new Vector3(4.5f, 0.5f, 1.5f), 0.8f, 0.8f, 0.8f, dynamic: true, name: "Box_E");
+            world.SpawnBox(new Vector3(6f, 0.35f, 0f), 3f, 0.3f, 4f, name: "Ramp", rotationDegrees: new Vector3(-18f, 0f, 0f)); // tilted ramp
+            world.SpawnBox(new Vector3(-7f, 1.6f, -4f), 4f, 0.4f, 4f, name: "Platform");                  // platform
         }
 
         private void SpawnPlayer()
         {
-            var player = new Element
-            {
-                Name = "Player",
-                LocalTransform = new TRS { Position = new Vector3(0, 1.5f, 0), Rotation = Quaternion.Identity, Scale = Vector3.One }
-            };
-            player.AddComponent(new PlayerComponent());
-            player.AddComponent(new LocomotionComponent
-            {
-                MoveSpeed = 5f,
-                JumpStrength = 6f,
-                Gravity = 20f
-            });
-            player.AddComponent(new ColliderComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f));
-            player.AddComponent(new PhysicsBodyComponent { IsKinematic = false });
-            // Without this, LocomotionSystem falls through to the direct
-            // position-update path (the physics velocity path is a no-op).
-            
-            var playerMesh = new MeshComponent(MeshShape.Capsule, 0.6f, 1.8f, 0.6f);
-            player.AddComponent(playerMesh);
-            player.AddComponent(new MeshRenderer { Mesh = playerMesh });
-            
+            var player = _gameroot.PersistentWorld.SpawnPlayer3D(at: new Vector3(0f, 1.5f, 0f));
             player.AddComponent(new ScriptComponent
             {
                 ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
             });
-            _gameroot.PersistentWorld.AddElement(player);
             Console.WriteLine("[Bootstrap] Player added to PersistentWorld (survives world switches).");
         }
 
@@ -249,65 +267,18 @@ namespace V12.SampleGame
 
         private void SpawnPortalFrame(string name, Vector3 position, Vector3 size)
         {
-            var e = new Element
-            {
-                Name = name,
-                LocalTransform = new TRS { Position = position, Rotation = Quaternion.Identity, Scale = Vector3.One }
-            };
-            var mesh = new MeshComponent(MeshShape.Box, size.X, size.Y, size.Z);
-            e.AddComponent(mesh);
-            e.AddComponent(new MeshRenderer { Mesh = mesh });
-            e.AddComponent(new MaterialComponent { R = 0.3f, G = 0.3f, B = 0.5f, A = 1f, Metallic = 0.8f, Roughness = 0.2f });
-            _gameroot.SelectedWorld?.AddElement(e);
-        }
-
-        private void SpawnPhysicsBox(string name, Vector3 position, Vector3 size, bool kinematic = false, Vector3? rotationDegrees = null)
-        {
-            var e = new Element { Name = name };
-
-            // For a rotated box we add the TransformComponent ourselves so the mesh and
-            // the physics body agree on the rotation: MeshComponent reads the
-            // TransformComponent when one exists, while the body follows
-            // element.LocalTransform. Assigning LocalTransform below mirrors the
-            // rotation into the TransformComponent, keeping both in sync.
-            if (rotationDegrees.HasValue)
-            {
-                e.AddComponent(new TransformComponent(position.X, position.Y, position.Z)
-                {
-                    RotationX = rotationDegrees.Value.X,
-                    RotationY = rotationDegrees.Value.Y,
-                    RotationZ = rotationDegrees.Value.Z
-                });
-            }
-
-            const float deg2rad = MathF.PI / 180f;
-            e.LocalTransform = new TRS
-            {
-                Position = position,
-                Rotation = rotationDegrees.HasValue
-                    ? Quaternion.CreateFromYawPitchRoll(
-                        rotationDegrees.Value.Y * deg2rad,
-                        rotationDegrees.Value.X * deg2rad,
-                        rotationDegrees.Value.Z * deg2rad)
-                    : Quaternion.Identity,
-                Scale = Vector3.One
-            };
-
-            e.AddComponent(new ColliderComponent(MeshShape.Box, size.X, size.Y, size.Z));
-            e.AddComponent(new PhysicsBodyComponent { IsKinematic = kinematic });
-            var mesh = new MeshComponent { Shape = MeshShape.Box, Width = size.X, Height = size.Y, Depth = size.Z };
-            e.AddComponent(mesh);
-            e.AddComponent(new MeshRenderer { Mesh = mesh });
+            var e = new Element(name);
+            e.SetTransform(position);
+            e.AddMesh(MeshShape.Box, size.X, size.Y, size.Z);
+            e.AddMaterial(0.3f, 0.3f, 0.5f, 1f, 0.8f, 0.2f);
             _gameroot.SelectedWorld?.AddElement(e);
         }
 
         private static Element MakeBox(string name, Vector3 scale)
         {
-            var b = new Element { Name = name };
-            b.AddComponent(new ColliderComponent(MeshShape.Box, scale.X, scale.Y, scale.Z));
-            var mesh = new MeshComponent(MeshShape.Box, scale.X, scale.Y, scale.Z);
-            b.AddComponent(mesh);
-            b.AddComponent(new MeshRenderer { Mesh = mesh });
+            var b = new Element(name);
+            b.AddCollider(MeshShape.Box, scale.X, scale.Y, scale.Z);
+            b.AddMesh(MeshShape.Box, scale.X, scale.Y, scale.Z);
             return b;
         }
 

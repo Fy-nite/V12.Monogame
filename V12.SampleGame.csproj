@@ -8,10 +8,12 @@
 
   <ItemGroup>
     <None Remove="DemoScene.xml" />
+    <None Remove="DemoLevel.xml" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="DemoScene.xml" />
+    <EmbeddedResource Include="DemoLevel.xml" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="libs\V12.Basic\V12.Basic.csproj" />
+    <ProjectReference Include="libs\V12.Pak\V12.Pak.csproj" />
   </ItemGroup>
 
 </Project>
