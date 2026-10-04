@@ -158,21 +158,22 @@ namespace V12.SampleGame
             ground.AddComponent(new MeshRenderer { Mesh = groundMesh });
             _gameroot.SelectedWorld?.AddElement(ground);
 
-            //// ---- Stacked boxes ----
-            //SpawnPhysicsBox("Box_A", new Vector3(-2, 0.5f, 0), new Vector3(1, 1, 1));
-            //SpawnPhysicsBox("Box_B", new Vector3(0, 0.5f, -3), new Vector3(1, 1, 1));
-            //SpawnPhysicsBox("Box_C", new Vector3(2, 0.5f, 0), new Vector3(1, 1, 1));
-            //SpawnPhysicsBox("Box_D", new Vector3(0, 1.5f, -3), new Vector3(1, 1, 1));
-            //SpawnPhysicsBox("Box_E", new Vector3(-4, 0.5f, -2), new Vector3(1.5f, 0.5f, 1.5f));
+            // ---- Test objects ----
 
-            //// ---- Ramp ----
-            //SpawnPhysicsBox("Ramp", new Vector3(4, 0f, 0), new Vector3(3f, 0.2f, 2f), kinematic: true);
+            // A little tower of dynamic boxes, to the left of the spawn point.
+            SpawnPhysicsBox("Box_A", new Vector3(-3, 0.5f, 0), new Vector3(1, 1, 1));
+            SpawnPhysicsBox("Box_B", new Vector3(-3, 1.5f, 0), new Vector3(1, 1, 1));
+            SpawnPhysicsBox("Box_C", new Vector3(-3, 2.5f, 0), new Vector3(1, 1, 1));
 
-            //// ---- Walls around play area ----
-            //SpawnPhysicsBox("Wall_N", new Vector3(0, 1, -10), new Vector3(20, 2, 0.5f), kinematic: true);
-            //SpawnPhysicsBox("Wall_S", new Vector3(0, 1, 10), new Vector3(20, 2, 0.5f), kinematic: true);
-            //SpawnPhysicsBox("Wall_E", new Vector3(10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
-            //SpawnPhysicsBox("Wall_W", new Vector3(-10, 1, 0), new Vector3(0.5f, 2, 20), kinematic: true);
+            // A few loose boxes to knock around.
+            SpawnPhysicsBox("Box_D", new Vector3(3, 0.5f, -2), new Vector3(1, 1, 1));
+            SpawnPhysicsBox("Box_E", new Vector3(4.5f, 0.5f, 1.5f), new Vector3(0.8f, 0.8f, 0.8f));
+
+            // A tilted static ramp (slopes down toward +Z) to slide boxes and the player.
+            SpawnPhysicsBox("Ramp", new Vector3(6, 0.35f, 0), new Vector3(3, 0.3f, 4), kinematic: true, rotationDegrees: new Vector3(-18f, 0, 0));
+
+            // A static raised platform.
+            SpawnPhysicsBox("Platform", new Vector3(-7, 1.6f, -4), new Vector3(4, 0.4f, 4), kinematic: true);
         }
 
         private void SpawnPlayer()
@@ -260,13 +261,38 @@ namespace V12.SampleGame
             _gameroot.SelectedWorld?.AddElement(e);
         }
 
-        private void SpawnPhysicsBox(string name, Vector3 position, Vector3 size, bool kinematic = false)
+        private void SpawnPhysicsBox(string name, Vector3 position, Vector3 size, bool kinematic = false, Vector3? rotationDegrees = null)
         {
-            var e = new Element
+            var e = new Element { Name = name };
+
+            // For a rotated box we add the TransformComponent ourselves so the mesh and
+            // the physics body agree on the rotation: MeshComponent reads the
+            // TransformComponent when one exists, while the body follows
+            // element.LocalTransform. Assigning LocalTransform below mirrors the
+            // rotation into the TransformComponent, keeping both in sync.
+            if (rotationDegrees.HasValue)
             {
-                Name = name,
-                LocalTransform = new TRS { Position = position, Rotation = Quaternion.Identity, Scale = Vector3.One }
+                e.AddComponent(new TransformComponent(position.X, position.Y, position.Z)
+                {
+                    RotationX = rotationDegrees.Value.X,
+                    RotationY = rotationDegrees.Value.Y,
+                    RotationZ = rotationDegrees.Value.Z
+                });
+            }
+
+            const float deg2rad = MathF.PI / 180f;
+            e.LocalTransform = new TRS
+            {
+                Position = position,
+                Rotation = rotationDegrees.HasValue
+                    ? Quaternion.CreateFromYawPitchRoll(
+                        rotationDegrees.Value.Y * deg2rad,
+                        rotationDegrees.Value.X * deg2rad,
+                        rotationDegrees.Value.Z * deg2rad)
+                    : Quaternion.Identity,
+                Scale = Vector3.One
             };
+
             e.AddComponent(new ColliderComponent(MeshShape.Box, size.X, size.Y, size.Z));
             e.AddComponent(new PhysicsBodyComponent { IsKinematic = kinematic });
             var mesh = new MeshComponent { Shape = MeshShape.Box, Width = size.X, Height = size.Y, Depth = size.Z };

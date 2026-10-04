@@ -1,0 +1,8 @@
+# Taste
+- Uses VS Code as their primary editor / git UI; handles git branch tracking inside VS Code rather than on the command line. Confidence: 0.5
+- Keeps a large set of local git working copies (a `G:\git` collection, e.g. `G:\git\EcoVR\libs\nova`) and offers them as the place to look for complete code — expects the agent to search local checkouts before concluding that code/commits are lost. Confidence: 0.6
+- Accepts rewriting remote history (force-push) when a local repo holds the complete history and the remote copy is an incomplete/cleaned re-publish; favors making the remote match the real local code over preserving the remote's historian. Confidence: 0.5
+- Values cross-platform support in their projects and treats loss of it (e.g. Windows-only libraries/platform backends) as a concern worth weighing against convenience; wants to understand trade-offs before settling for a platform-locked approach — e.g. chose to keep both GL and DX launchers rather than a single backend. Confidence: 0.6
+- Scopes work pragmatically toward a focused first pass, dropping optional/nice-to-have features (e.g. VR, textures/PBR) in favor of core functionality ("i don't need VR for this, just 3d if possible"). Confidence: 0.4
+- Wants simple, concrete test/prop objects placed in the scene so new features (e.g. physics) can be poked at hands-on; asks for these as a follow-up to a fix rather than leaving the scene minimal. Confidence: 0.45
+- Expects conventional default key bindings for player controls (e.g. Space = jump) unless a binding already exists for it, rather than custom/keyboard-letter mappings. Confidence: 0.45
