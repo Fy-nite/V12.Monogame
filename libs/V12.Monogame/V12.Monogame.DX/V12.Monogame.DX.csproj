@@ -21,6 +21,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\V12.Monogame\V12.Monogame.csproj" />
-    <ProjectReference Include="..\..\..\V12.SampleGame.csproj" />
+    <ProjectReference Include="..\..\..\Scramble.csproj" />
   </ItemGroup>
 </Project>

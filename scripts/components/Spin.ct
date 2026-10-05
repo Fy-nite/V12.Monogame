@@ -1,0 +1,37 @@
+// A Contract (.ct) *component type*.
+//
+// V12 compiles this file once (ContractComponentRegistry), then for each element
+// it is attached to allocates a VM instance and drives the lifecycle hooks:
+//
+//   on_attach()    - once, when the component is added to an element
+//   on_update(dt)  - every frame; `this.<field>` is this instance's state
+//   on_detach()    - when the component is removed
+//
+// The owning element is available as V12.Script.Owner().
+
+Contract Spin {
+    speed: float;
+    angle: float;
+
+    constructor() {
+        this.speed = 90.0;
+        this.angle = 0.0;
+    }
+
+    fn on_attach() {
+        IO.Println("[Spin] on_attach");
+    }
+
+    fn on_update(dt: float) {
+        this.angle = this.angle + this.speed * dt;
+        if (this.angle > 360.0) {
+            this.angle = this.angle - 360.0;
+            IO.Println("[Spin] on_update (full turn)");
+        }
+        V12.Components.SetFloat(V12.Script.Owner(), "Transform", "RY", this.angle * 0.0174533);
+    }
+
+    fn on_detach() {
+        IO.Println("[Spin] on_detach");
+    }
+}

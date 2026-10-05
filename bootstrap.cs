@@ -4,6 +4,7 @@ using V12.Basic;
 using V12.Basic.Building;
 using V12.Basic.Components;
 using V12.Basic.Scene;
+using V12.Bindings;
 using V12.Components;
 using V12.Components.Renderables;
 using V12.Core;
@@ -45,25 +46,31 @@ namespace V12.SampleGame
             Console.WriteLine("Bootstrap.Initialize called");
             BasicRegistry.RegisterAll(_gameroot);
 
+            // Contract (.ct) as a runtime language: register the extension → runtime
+            // mapping (.ct → Contract) and compile any component types under
+            // scripts/components. Must run before element scripts attach.
+            V12ScriptRuntimeRegistration.RegisterAll(_gameroot);
+            ContractComponentRegistry.CreateAndRegister(_gameroot);
+
             var xrService = g.Registry.Get("XRTrackingService");
             if (xrService != null)
             {
                 Console.WriteLine("[Bootstrap] XR mode — spawning XR player");
-                SpawnPhysicsWorldOnly();
-                SpawnXrScene();
+                //SpawnPhysicsWorldOnly();
+                //SpawnXrScene(); // no need for XR now
                 //SpawnPortalPair();
             }
             else
             {
                 Console.WriteLine("[Bootstrap] Desktop mode — spawning physics test world");
-                SpawnPhysicsTestWorld();
+                //SpawnPhysicsTestWorld();
             }
 
             try
             {
                 Console.WriteLine("Loading World");
-                var world = WorldLoader.LoadFromArchive("tbg.V12World");
-                _gameroot.SelectedWorld?.Root.AddRange(world.Root);
+                //var world = WorldLoader.LoadFromArchive("tbg.V12World");
+                //_gameroot.SelectedWorld?.Root.AddRange(world.Root);
             }
             catch (Exception ex)
             {
@@ -72,9 +79,60 @@ namespace V12.SampleGame
 
             Console.WriteLine($"Bootstrap: SelectedWorld is null? {_gameroot.SelectedWorld == null}");
 
-            LoadContentPaks();
-            BindDemoScene();
+            //LoadContentPaks();
+            //BindDemoScene();
             BuildHud();
+            BuildMainMenu();
+            SpawnContractDemo();
+        }
+
+        /// <summary>
+        /// Demonstrates Contract (.ct) as a runtime language:
+        /// one box driven by a .ct *component type* ("Spin"), and one box running a
+        /// .ct *element script* — both living in the running game.
+        /// </summary>
+        private void SpawnContractDemo()
+        {
+            var world = _gameroot.SelectedWorld;
+            if (world == null)
+            {
+                Console.WriteLine("[Bootstrap] no selected world — skipping Contract demo");
+                return;
+            }
+
+            // .ct component type (scripts/components/Spin.ct)
+            var spinner = world.SpawnBox(new Vector3(0f, 1.5f, -3f), 1f, 1f, 1f, dynamic: false, name: "SpinBox");
+            var registry = ContractComponentRegistry.FromGameRoot();
+            if (registry != null && registry.Attach(spinner, "Spin"))
+                Console.WriteLine("[Bootstrap] attached .ct component 'Spin' to SpinBox");
+            else
+                Console.WriteLine("[Bootstrap] Contract component 'Spin' unavailable");
+
+            // .ct element script (scripts/SpinElement.ct) — ScriptComponent dispatches by extension
+            var scripted = world.SpawnBox(new Vector3(2f, 1.5f, -3f), 0.6f, 0.6f, 0.6f, dynamic: false, name: "ScriptBox");
+            scripted.AddComponent(new ScriptComponent { Source = "scripts/SpinElement.ct" });
+        }
+
+        /// <summary>
+        /// A simple centred main menu: Start / Settings / Edit. The menu box is a sized
+        /// container anchored to the centre of the canvas, and the buttons flow inside it.
+        /// (An anchor is relative to the parent, so a button inside the top-left HUD layout
+        /// would centre within that layout, not the screen.)
+        /// </summary>
+        private void BuildMainMenu()
+        {
+            if (_gameroot.Registry.Get("UIBuilder")?.ServiceInstance is not IUIBuilder ui) return;
+
+            // Auto-sized so Gum can centre the whole block (a fixed size with default size
+            // units anchors against the wrong bounds).
+            var menu = ui.VLayout(ui.Root, "MainMenu", spacing: 10f, padding: 10f);
+            menu.AddComponent(new V12.Components.UI.UIStyleComponent { Anchor = "center" });
+
+            ui.Button(menu, "MenuStart", () => Console.WriteLine("[Menu] Start"));
+            ui.Button(menu, "MenuSettings", () => Console.WriteLine("[Menu] Settings"));
+            ui.Button(menu, "MenuEdit", () => Console.WriteLine("[Menu] Edit"));
+
+            Console.WriteLine("[Bootstrap] main menu built (centred)");
         }
 
         /// <summary>
@@ -91,17 +149,21 @@ namespace V12.SampleGame
             {
                 canvas.ScreenSpace = true; // first pass renders screen-space canvases
             }
-
+            
             var layout = ui.VLayout(ui.Root, "HudLayout", spacing: 8f, padding: 12f);
             ui.Label(layout, "HudTitle", "V12 + Gum HUD");
 
             int clicks = 0;
-            ui.Button(layout, "HudButton", () =>
+            var btn = ui.Button(layout, "HudButton", () =>
             {
                 clicks++;
                 Console.WriteLine($"[HUD] button clicked x{clicks}");
                 _gameroot.SelectedWorld?.SpawnBox(new Vector3(0f, 4f, -4f), 0.5f, 0.5f, 0.5f, dynamic: true, name: $"HudBox_{clicks}");
             });
+
+            // A widget anchored to the centre of its parent (the canvas) — see UIStyleComponent.Anchor.
+            //var centered = ui.Label(ui.Root, "HudCenter", "CENTERED");
+            btn.AddComponent(new V12.Components.UI.UIStyleComponent { Anchor = "center" });
 
             Console.WriteLine("[Bootstrap] HUD built via UIBuilder (canvas captured for Gum)");
         }
@@ -134,185 +196,140 @@ namespace V12.SampleGame
             }
         }
 
-        /// <summary>
-        /// Loads the embedded WorldML demo scene, merges its elements into the active world, then
-        /// binds C# handlers to its named/tagged elements — the editor-authored-scene → code loop.
-        /// </summary>
-        private void BindDemoScene()
-        {
-            var world = _gameroot.SelectedWorld;
-            if (world == null) return;
+        ///// <summary>
+        ///// Loads the embedded WorldML demo scene, merges its elements into the active world, then
+        ///// binds C# handlers to its named/tagged elements — the editor-authored-scene → code loop.
+        ///// </summary>
+        //private void BindDemoScene()
+        //{
+        //    var world = _gameroot.SelectedWorld;
+        //    if (world == null) return;
 
-            try
-            {
-                var demo = _gameroot.LoadSceneFromResource(Assembly.GetExecutingAssembly(), "V12.SampleGame.DemoLevel.xml", worldName: "DemoLevel", select: false);
-                var container = demo.Root[0];
-                foreach (var child in container.Children.ToArray())
-                {
-                    container.RemoveChild(child);
-                    world.AddElement(child);
-                }
+        //    try
+        //    {
+        //        var demo = _gameroot.LoadSceneFromResource(Assembly.GetExecutingAssembly(), "V12.SampleGame.DemoLevel.xml", worldName: "DemoLevel", select: false);
+        //        var container = demo.Root[0];
+        //        foreach (var child in container.Children.ToArray())
+        //        {
+        //            container.RemoveChild(child);
+        //            world.AddElement(child);
+        //        }
 
-                // WorldML writes TransformComponents; reconcile LocalTransform so physics
-                // bodies are created at the scene-placed positions.
-                world.SyncLocalTransforms();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Bootstrap] Demo scene unavailable: {ex.Message}");
-                return;
-            }
+        //        // WorldML writes TransformComponents; reconcile LocalTransform so physics
+        //        // bodies are created at the scene-placed positions.
+        //        world.SyncLocalTransforms();
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"[Bootstrap] Demo scene unavailable: {ex.Message}");
+        //        return;
+        //    }
 
-            world.Bind()
-                .On("DemoButton", e => Console.WriteLine($"[Bind] found '{e.Name}' ({e.Components.Count} components)"))
-                .OnTag("enemy", e =>
-                {
-                    e.AddComponent(new HealthComponent(50));
-                    Console.WriteLine($"[Bind] enemy '{e.Name}' given 50 HP");
-                })
-                .On<TagComponent>("DemoButton", t => Console.WriteLine($"[Bind] DemoButton tags: [{t.Tags}]"))
-                .On<ButtonComponent>("DemoButton", b =>
-                {
-                    b.OnPressed = () =>
-                    {
-                        Console.WriteLine($"[Button] '{b.Label}' clicked — spawning a box");
-                        world.SpawnBox(new Vector3(0f, 4f, -4f), 0.5f, 0.5f, 0.5f, dynamic: true, name: "ButtonSpawn");
-                    };
-                    Console.WriteLine($"[Bind] wired '{b.Label}'.OnPressed");
-                })
-                .OnPath("DemoEnemies/Enemy_A", e => Console.WriteLine($"[Bind] path 'DemoEnemies/Enemy_A' matched '{e.Name}'"))
-                .Auto();
-        }
+        //    world.Bind()
+        //        .On("DemoButton", e => Console.WriteLine($"[Bind] found '{e.Name}' ({e.Components.Count} components)"))
+        //        .OnTag("enemy", e =>
+        //        {
+        //            e.AddComponent(new HealthComponent(50));
+        //            Console.WriteLine($"[Bind] enemy '{e.Name}' given 50 HP");
+        //        })
+        //        .On<TagComponent>("DemoButton", t => Console.WriteLine($"[Bind] DemoButton tags: [{t.Tags}]"))
+        //        .On<ButtonComponent>("DemoButton", b =>
+        //        {
+        //            b.OnPressed = () =>
+        //            {
+        //                Console.WriteLine($"[Button] '{b.Label}' clicked — spawning a box");
+        //                world.SpawnBox(new Vector3(0f, 4f, -4f), 0.5f, 0.5f, 0.5f, dynamic: true, name: "ButtonSpawn");
+        //            };
+        //            Console.WriteLine($"[Bind] wired '{b.Label}'.OnPressed");
+        //        })
+        //        .OnPath("DemoEnemies/Enemy_A", e => Console.WriteLine($"[Bind] path 'DemoEnemies/Enemy_A' matched '{e.Name}'"))
+        //        .Auto();
+        //}
         
 
-        private void SpawnXrScene()
-        {
-            var world = _gameroot.SelectedWorld;
-            if (world == null) return;
+        //private void SpawnXrScene()
+        //{
+        //    var world = _gameroot.SelectedWorld;
+        //    if (world == null) return;
 
-            var xrPlayer = new Element { Name = "Player" };
-            var xrPlayerComp = new PlayerComponent { IsXrMode = true };
-            xrPlayer.AddComponent(xrPlayerComp);
-            xrPlayer.AddComponent(new VRPlayerComponent());
-            world.AddElement(xrPlayer);
+        //    var xrPlayer = new Element { Name = "Player" };
+        //    var xrPlayerComp = new PlayerComponent { IsXrMode = true };
+        //    xrPlayer.AddComponent(xrPlayerComp);
+        //    xrPlayer.AddComponent(new VRPlayerComponent());
+        //    world.AddElement(xrPlayer);
 
-            var xrRoot = new Element { Name = "XR_Root" };
-            xrRoot.AddComponent(new XRRootComponent());
-            xrPlayer.AddChild(xrRoot);
+        //    var xrRoot = new Element { Name = "XR_Root" };
+        //    xrRoot.AddComponent(new XRRootComponent());
+        //    xrPlayer.AddChild(xrRoot);
 
-            var xrHead = MakeBox("XR_Head", new Vector3(0.1f, 0.1f, 0.06f));
-            xrHead.AddComponent(new XRHeadComponent());
-            xrHead.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.Head });
-            xrRoot.AddChild(xrHead);
+        //    var xrHead = MakeBox("XR_Head", new Vector3(0.1f, 0.1f, 0.06f));
+        //    xrHead.AddComponent(new XRHeadComponent());
+        //    xrHead.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.Head });
+        //    xrRoot.AddChild(xrHead);
 
-            var xrLeft = MakeBox("XR_LeftHand", new Vector3(0.08f, 0.08f, 0.1f));
-            xrLeft.AddComponent(new XRHandComponent(HandSide.Left));
-            xrLeft.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.LeftHand });
-            xrRoot.AddChild(xrLeft);
+        //    var xrLeft = MakeBox("XR_LeftHand", new Vector3(0.08f, 0.08f, 0.1f));
+        //    xrLeft.AddComponent(new XRHandComponent(HandSide.Left));
+        //    xrLeft.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.LeftHand });
+        //    xrRoot.AddChild(xrLeft);
 
-            var xrRight = MakeBox("XR_RightHand", new Vector3(0.08f, 0.08f, 0.1f));
-            xrRight.AddComponent(new XRHandComponent(HandSide.Right));
-            xrRight.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.RightHand });
-            xrRoot.AddChild(xrRight);
+        //    var xrRight = MakeBox("XR_RightHand", new Vector3(0.08f, 0.08f, 0.1f));
+        //    xrRight.AddComponent(new XRHandComponent(HandSide.Right));
+        //    xrRight.AddComponent(new XRVisualizerComponent { Target = XRPoseTarget.RightHand });
+        //    xrRoot.AddChild(xrRight);
 
-            // Ground already created by SpawnPhysicsWorldOnly
+        //    // Ground already created by SpawnPhysicsWorldOnly
 
-            // ── Demo button: spawns a physics box when pressed ──
-            var spawnCount = 0;
-            var button = world.SpawnBox(new Vector3(0f, 1f, -2f), 0.3f, 0.3f, 0.3f, dynamic: false, name: "SpawnBoxButton");
-            button.AddComponent(new ButtonComponent
-            {
-                Label = "Spawn Box",
-                OnPressed = () =>
-                {
-                    spawnCount++;
-                    Console.WriteLine($"[Bootstrap] Spawning box #{spawnCount}");
-                    world.SpawnBox(new Vector3(0f, 2.5f, -4f), 0.4f, 0.4f, 0.4f, dynamic: true, name: $"SpawnedBox_{spawnCount}");
-                }
-            });
-        }
+        //    // ── Demo button: spawns a physics box when pressed ──
+        //    var spawnCount = 0;
+        //    var button = world.SpawnBox(new Vector3(0f, 1f, -2f), 0.3f, 0.3f, 0.3f, dynamic: false, name: "SpawnBoxButton");
+        //    button.AddComponent(new ButtonComponent
+        //    {
+        //        Label = "Spawn Box",
+        //        OnPressed = () =>
+        //        {
+        //            spawnCount++;
+        //            Console.WriteLine($"[Bootstrap] Spawning box #{spawnCount}");
+        //            world.SpawnBox(new Vector3(0f, 2.5f, -4f), 0.4f, 0.4f, 0.4f, dynamic: true, name: $"SpawnedBox_{spawnCount}");
+        //        }
+        //    });
+        //}
 
-        private void SpawnPhysicsTestWorld()
-        {
-            SpawnPhysicsWorldOnly();
-            //SpawnPortalPair();
-            SpawnPlayer();
-        }
+        //private void SpawnPhysicsTestWorld()
+        //{
+        //    //SpawnPhysicsWorldOnly();
+        //    //SpawnPortalPair();
+        //    //SpawnPlayer();
+        //}
 
-        private void SpawnPhysicsWorldOnly()
-        {
-            var world = _gameroot.SelectedWorld;
-            if (world == null) return;
+        //private void SpawnPhysicsWorldOnly()
+        //{
+        //    var world = _gameroot.SelectedWorld;
+        //    if (world == null) return;
 
-            // ---- Ground (top surface at y = -0.5) ----
-            world.AddGround(size: 40f, thickness: 1f, topY: -0.5f);
+        //    // ---- Ground (top surface at y = -0.5) ----
+        //    world.AddGround(size: 40f, thickness: 1f, topY: -0.5f);
 
-            // ---- Test objects ----
-            world.SpawnBoxStack(new Vector3(-3f, 0.5f, 0f), 3, 1f, namePrefix: "Box");                    // tower
-            world.SpawnBox(new Vector3(3f, 0.5f, -2f), dynamic: true, name: "Box_D");                     // loose boxes
-            world.SpawnBox(new Vector3(4.5f, 0.5f, 1.5f), 0.8f, 0.8f, 0.8f, dynamic: true, name: "Box_E");
-            world.SpawnBox(new Vector3(6f, 0.35f, 0f), 3f, 0.3f, 4f, name: "Ramp", rotationDegrees: new Vector3(-18f, 0f, 0f)); // tilted ramp
-            world.SpawnBox(new Vector3(-7f, 1.6f, -4f), 4f, 0.4f, 4f, name: "Platform");                  // platform
-        }
+        //    // ---- Test objects ----
+        //    world.SpawnBoxStack(new Vector3(-3f, 0.5f, 0f), 3, 1f, namePrefix: "Box");                    // tower
+        //    world.SpawnBox(new Vector3(3f, 0.5f, -2f), dynamic: true, name: "Box_D");                     // loose boxes
+        //    world.SpawnBox(new Vector3(4.5f, 0.5f, 1.5f), 0.8f, 0.8f, 0.8f, dynamic: true, name: "Box_E");
+        //    world.SpawnBox(new Vector3(6f, 0.35f, 0f), 3f, 0.3f, 4f, name: "Ramp", rotationDegrees: new Vector3(-18f, 0f, 0f)); // tilted ramp
+        //    world.SpawnBox(new Vector3(-7f, 1.6f, -4f), 4f, 0.4f, 4f, name: "Platform");                  // platform
+        //}
 
-        private void SpawnPlayer()
-        {
-            var player = _gameroot.PersistentWorld.SpawnPlayer3D(at: new Vector3(0f, 1.5f, 0f));
-            player.AddComponent(new ScriptComponent
-            {
-                ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
-            });
-            Console.WriteLine("[Bootstrap] Player added to PersistentWorld (survives world switches).");
-        }
+        //private void SpawnPlayer()
+        //{
+        //    var player = _gameroot.PersistentWorld.SpawnPlayer3D(at: new Vector3(0f, 1.5f, 0f));
+        //    //TODO: add this back at somepoint.
+        //    //player.AddComponent(new ScriptComponent
+        //    //{
+        //    //    ScriptText = "function on_init()\n    print(\"Hello from Lua!\")\nend"
+        //    //});
+        //    Console.WriteLine("[Bootstrap] Player added to PersistentWorld (survives world switches).");
+        //}
 
-        private void SpawnPortalPair()
-        {
-            var world = _gameroot.SelectedWorld;
-            if (world == null) return;
 
-            // Portal A — entrance
-            var portalA = new Element
-            {
-                Name = "PortalA"
-            };
-            portalA.AddComponent(new TransformComponent(-4, 1.5f, -4));
-            portalA.AddComponent(new PortalComponent(exitPortalElementId: 0) { Width = 2f, Height = 2.5f, IsTeleport = true });
-
-            // Portal B — exit
-            var portalB = new Element
-            {
-                Name = "PortalB"
-            };
-            portalB.AddComponent(new TransformComponent(4, 1.5f, 4));
-            portalB.AddComponent(new PortalComponent(exitPortalElementId: 0) { Width = 2f, Height = 2.5f, IsTeleport = true });
-
-            world.AddElement(portalA);
-            world.AddElement(portalB);
-
-            // Link them bidirectionally after both are added so IDs are stable
-            var compA = portalA.GetComponent<PortalComponent>();
-            var compB = portalB.GetComponent<PortalComponent>();
-            compA.ExitPortalElementId = portalB.Id;
-            compB.ExitPortalElementId = portalA.Id;
-
-            // Add a portal link component for reference
-            portalA.AddComponent(new PortalLinkComponent(portalA.Id, portalB.Id));
-
-            // Portal frames (visual walls with holes matching portal size)
-            SpawnPortalFrame("PortalAFrame", new Vector3(-4, 1.5f, -4.5f), new Vector3(3f, 3f, 0.2f));
-            SpawnPortalFrame("PortalBFrame", new Vector3(4, 1.5f, 4.5f), new Vector3(3f, 3f, 0.2f));
-
-            Console.WriteLine($"[Bootstrap] Portal pair created: A={portalA.Id} <-> B={portalB.Id}");
-        }
-
-        private void SpawnPortalFrame(string name, Vector3 position, Vector3 size)
-        {
-            var e = new Element(name);
-            e.SetTransform(position);
-            e.AddMesh(MeshShape.Box, size.X, size.Y, size.Z);
-            e.AddMaterial(0.3f, 0.3f, 0.5f, 1f, 0.8f, 0.2f);
-            _gameroot.SelectedWorld?.AddElement(e);
-        }
+    
 
         private static Element MakeBox(string name, Vector3 scale)
         {

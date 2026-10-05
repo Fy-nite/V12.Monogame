@@ -1,0 +1,23 @@
+// A Contract (.ct) *element script*.
+//
+// ScriptComponent dispatches a ".ct" Source to the Contract runtime. Unlike a
+// component type, hooks here are top-level functions; the owning element is
+// V12.Script.Owner().
+
+Contract Ticker {
+    static ticks: int;
+}
+
+fn on_init() {
+    Ticker.ticks = 0;
+    IO.Println("[SpinElement] on_init");
+    V12.Components.SetColor(V12.Script.Owner(), 0.35, 0.75, 1.0, 1.0);
+}
+
+fn on_update(dt: float) {
+    Ticker.ticks += 1;
+    if (Ticker.ticks > 120) {
+        Ticker.ticks = 0;
+        IO.Println("[SpinElement] on_update tick");
+    }
+}

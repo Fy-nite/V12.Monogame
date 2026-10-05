@@ -198,8 +198,43 @@ namespace V12.Monogame
                     break;
             }
 
-            if (node.Width > 0f) control.Visual.Width = node.Width;
-            if (node.Height > 0f) control.Visual.Height = node.Height;
+            if (node.Width > 0f)
+            {
+                control.Visual.Width = node.Width;
+                control.Visual.WidthUnits = Gum.DataTypes.DimensionUnitType.Absolute;
+            }
+            if (node.Height > 0f)
+            {
+                control.Visual.Height = node.Height;
+                control.Visual.HeightUnits = Gum.DataTypes.DimensionUnitType.Absolute;
+            }
+
+            // An anchor (from UIStyleComponent.Anchor) positions the control within its
+            // parent (e.g. "center"), and opts it out of the flow layout below.
+            if (TryGetAnchor(node.Anchor, out var anchor))
+                control.Anchor(anchor);
+        }
+
+        private static bool TryGetAnchor(string value, out Gum.Wireframe.Anchor anchor)
+        {
+            anchor = Gum.Wireframe.Anchor.TopLeft;
+            if (string.IsNullOrWhiteSpace(value)) return false;
+
+            switch (value.Trim().ToLowerInvariant().Replace("-", "").Replace("_", "").Replace(" ", ""))
+            {
+                case "center":
+                case "centre":
+                case "middle": anchor = Gum.Wireframe.Anchor.Center; return true;
+                case "top": anchor = Gum.Wireframe.Anchor.Top; return true;
+                case "topleft": anchor = Gum.Wireframe.Anchor.TopLeft; return true;
+                case "topright": anchor = Gum.Wireframe.Anchor.TopRight; return true;
+                case "left": anchor = Gum.Wireframe.Anchor.Left; return true;
+                case "right": anchor = Gum.Wireframe.Anchor.Right; return true;
+                case "bottom": anchor = Gum.Wireframe.Anchor.Bottom; return true;
+                case "bottomleft": anchor = Gum.Wireframe.Anchor.BottomLeft; return true;
+                case "bottomright": anchor = Gum.Wireframe.Anchor.BottomRight; return true;
+                default: return false;
+            }
         }
 
         /// <summary>Small stack layout: children flow vertically (H layouts horizontally) in their parent.</summary>
@@ -225,6 +260,7 @@ namespace V12.Monogame
                 foreach (var child in group.Value)
                 {
                     if (!_controls.TryGetValue(child.Id, out var control)) continue;
+                    if (TryGetAnchor(child.Anchor, out _)) continue; // anchored children place themselves
 
                     if (horizontal)
                     {
