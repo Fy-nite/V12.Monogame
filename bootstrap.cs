@@ -19,7 +19,11 @@ namespace V12.SampleGame
     public class Bootstrap : IGameService
     {
         GameRoot _gameroot = default!;
-        readonly List<V12PakLoader> _pakLoaders = new();
+        readonly List<V12PakLoadResult> _pakLoaders = new();
+        string? _currentGame;
+        IUIBuilder? _ui;
+        IWorldElement? _menuEl;
+        IWorldElement? _ingameBar;
 
         public Bootstrap() { }
 
@@ -82,8 +86,26 @@ namespace V12.SampleGame
             //LoadContentPaks();
             //BindDemoScene();
             BuildHud();
-            BuildMainMenu();
-            SpawnContractDemo();
+            BuildGameMenu();
+            AutoLaunchFromEnv();
+        }
+
+        /// <summary>Unload the active game pak and its gamepaks before switching games.</summary>
+        private void UnloadCurrentGame()
+        {
+            if (_pakLoaders.Count > 0)
+            {
+                foreach (var loader in _pakLoaders)
+                {
+                    foreach (var world in loader.LoadedWorlds)
+                        _gameroot.Worlds.Remove(world);
+                    loader.Dispose();
+                }
+                _pakLoaders.Clear();
+            }
+            _gameroot.Gamepaks.Clear();
+            _currentGame = null;
+            HideIngameBar();
         }
 
         /// <summary>
@@ -114,25 +136,161 @@ namespace V12.SampleGame
         }
 
         /// <summary>
-        /// A simple centred main menu: Start / Settings / Edit. The menu box is a sized
-        /// container anchored to the centre of the canvas, and the buttons flow inside it.
-        /// (An anchor is relative to the parent, so a button inside the top-left HUD layout
-        /// would centre within that layout, not the screen.)
+        /// A simple centred main menu listing every <c>.v12pak</c> found under
+        /// <c>games/</c>. Clicking a button loads the pak as the active game:
+        /// its worlds are added, its Contract entry scripts' <c>Main</c> runs,
+        /// and <c>OnUpdate</c> ticks from then on.
         /// </summary>
-        private void BuildMainMenu()
+        private void BuildGameMenu()
         {
             if (_gameroot.Registry.Get("UIBuilder")?.ServiceInstance is not IUIBuilder ui) return;
+            _ui = ui;
 
             // Auto-sized so Gum can centre the whole block (a fixed size with default size
             // units anchors against the wrong bounds).
-            var menu = ui.VLayout(ui.Root, "MainMenu", spacing: 10f, padding: 10f);
+            var menu = ui.VLayout(ui.Root, "MainMenu", spacing: 14f, padding: 20f);
             menu.AddComponent(new V12.Components.UI.UIStyleComponent { Anchor = "center" });
+            _menuEl = menu;
 
-            ui.Button(menu, "MenuStart", () => Console.WriteLine("[Menu] Start"));
-            ui.Button(menu, "MenuSettings", () => Console.WriteLine("[Menu] Settings"));
-            ui.Button(menu, "MenuEdit", () => Console.WriteLine("[Menu] Edit"));
+            ui.Label(menu, "MenuTitle", "V12 Launcher");
+            ui.Label(menu, "MenuSubtitle", "Select a game from the games folder");
 
-            Console.WriteLine("[Bootstrap] main menu built (centred)");
+            var games = DiscoverGames();
+            if (games.Count == 0)
+                ui.Label(menu, "MenuEmpty", $"No .v12pak found under '{GamesDirectory()}'");
+
+            foreach (var pak in games)
+            {
+                string name = Path.GetFileNameWithoutExtension(pak);
+                ui.Button(menu, name, () => LaunchGame(pak));
+            }
+
+            Console.WriteLine($"[Bootstrap] game menu built ({games.Count} game(s))");
+        }
+
+        /// <summary>Detach the main menu from the UI tree (stops it rendering and updating).</summary>
+        private void HideMenu()
+        {
+            if (_menuEl != null && _menuEl.Parent != null)
+                _menuEl.Parent.RemoveChild(_menuEl);
+        }
+
+        /// <summary>Re-attach the main menu to the UI tree.</summary>
+        private void ShowMenu()
+        {
+            if (_menuEl != null && _ui != null && _menuEl.Parent == null)
+                _ui.Root.AddChild(_menuEl);
+        }
+
+        /// <summary>Small bar shown while a game is running ("← Games" button).</summary>
+        private void ShowIngameBar()
+        {
+            if (_ui == null || _ingameBar != null) return;
+            var bar = _ui.VLayout(_ui.Root, "IngameBar", spacing: 6f, padding: 10f);
+            _ui.Button(bar, "← Games", BackToMenu);
+            _ingameBar = bar;
+        }
+
+        private void HideIngameBar()
+        {
+            if (_ingameBar != null && _ingameBar.Parent != null)
+                _ingameBar.Parent.RemoveChild(_ingameBar);
+            _ingameBar = null;
+        }
+
+        /// <summary>Unload the running game and bring the main menu back.</summary>
+        private void BackToMenu()
+        {
+            UnloadCurrentGame();
+            HideIngameBar();
+            ShowMenu();
+            Console.WriteLine("[Launcher] back to menu");
+        }
+
+        /// <summary>Path of the discoverable games folder (next to the exe or cwd).</summary>
+        private static string GamesDirectory()
+        {
+            string besideExe = Path.Combine(AppContext.BaseDirectory, "games");
+            if (Directory.Exists(besideExe)) return besideExe;
+            return Path.Combine(Directory.GetCurrentDirectory(), "games");
+        }
+
+        /// <summary>All <c>.v12pak</c> files in the games folder, ordered by name.</summary>
+        private static List<string> DiscoverGames()
+        {
+            string dir = GamesDirectory();
+            return Directory.Exists(dir)
+                ? Directory.EnumerateFiles(dir, "*.v12pak").OrderBy(p => p).ToList()
+                : new List<string>();
+        }
+
+        /// <summary>
+        /// Auto-launch a game when <c>V12_AUTOGAME</c> matches its pak name
+        /// (useful for quick play-tests without clicking the menu).
+        /// </summary>
+        private void AutoLaunchFromEnv()
+        {
+            var want = Environment.GetEnvironmentVariable("V12_AUTOGAME");
+            if (string.IsNullOrWhiteSpace(want)) return;
+
+            foreach (var pak in DiscoverGames())
+            {
+                if (string.Equals(Path.GetFileNameWithoutExtension(pak), want, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[Bootstrap] V12_AUTOGAME='{want}' — launching");
+                    LaunchGame(pak);
+                    return;
+                }
+            }
+            Console.WriteLine($"[Bootstrap] V12_AUTOGAME='{want}' did not match any game in {GamesDirectory()}");
+        }
+
+        /// <summary>
+        /// Load a <c>.v12pak</c> as the active game: its worlds are added to the
+        /// game root, the first one is selected, and its Contract gamepaks are
+        /// initialized and started. The loader stays alive for as long as the
+        /// game runs.
+        /// </summary>
+        private void LaunchGame(string pakPath)
+        {
+            try
+            {
+                Console.WriteLine($"[Launcher] loading game pak '{pakPath}'");
+                if (string.Equals(_currentGame, pakPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[Launcher] '{pakPath}' is already the active game — ignoring (spurious click?)");
+                    return;
+                }
+                UnloadCurrentGame();
+                var loader = _gameroot.LoadPak(pakPath, new V12PakOptions
+                {
+                    LoadDlls = false,             // Contract scripts only — keep it user-safe
+                    LoadContractScripts = true,    // compile & run the game's .ct entrypoints
+                    AllowWorldLoading = true,
+                });
+                _pakLoaders.Add(loader);
+
+                foreach (var world in loader.LoadedWorlds)
+                    Console.WriteLine($"[Launcher] loaded world '{world.WorldName}'");
+
+                if (loader.LoadedWorlds.Count > 0)
+                {
+                    var first = loader.LoadedWorlds[0];
+                    _gameroot.SelectWorld(first);
+                    Console.WriteLine($"[Launcher] selected world '{first.WorldName}'");
+                }
+
+                _gameroot.Gamepaks.InitializeAll();
+                _gameroot.Gamepaks.StartAll();
+                _currentGame = pakPath;
+                Console.WriteLine($"[Launcher] game started ({loader.LoadedGamepaks} gamepak(s))");
+                HideMenu();
+                ShowIngameBar();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Launcher] failed to load '{pakPath}': {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -186,9 +344,9 @@ namespace V12.SampleGame
 
             try
             {
-                var loader = _gameroot.LoadPak(pakPath, V12PakOptions.FullTrust);
-                _pakLoaders.Add(loader);
-                Console.WriteLine($"[Bootstrap] Loaded pak '{Path.GetFileName(pakPath)}' ({loader.Results.Count} step(s)).");
+                var result = _gameroot.LoadPak(pakPath, new V12PakOptions { LoadDlls = true, LoadContractScripts = true });
+                _pakLoaders.Add(result);
+                Console.WriteLine($"[Bootstrap] Loaded pak '{Path.GetFileName(pakPath)}' ({result.LoadedWorlds.Count} world(s)).");
             }
             catch (Exception ex)
             {

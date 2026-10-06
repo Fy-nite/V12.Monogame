@@ -9,6 +9,8 @@
 //
 // The owning element is available as V12.Script.Owner().
 
+import __builtin.std;
+
 Contract Spin {
     speed: float;
     angle: float;

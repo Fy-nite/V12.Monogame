@@ -4,6 +4,8 @@
 // component type, hooks here are top-level functions; the owning element is
 // V12.Script.Owner().
 
+import __builtin.std;
+
 Contract Ticker {
     static ticks: int;
 }

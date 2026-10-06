@@ -29,7 +29,11 @@
   <ItemGroup>
     <ProjectReference Include="libs\V12.Basic\V12.Basic.csproj" />
     <ProjectReference Include="libs\V12.Basic\libs\V12.Bindings\V12.Bindings.csproj" />
-    <ProjectReference Include="libs\V12.Pak\V12.Pak.csproj" />
+    <ProjectReference Include="libs\V12.Basic\libs\V12.Pak\V12.Pak.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="games\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
