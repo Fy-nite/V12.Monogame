@@ -27,14 +27,14 @@ it. All live under `V12.Components.UI.*` and derive from `ComponentBase` (they a
 Children of a canvas element do **not** need their own `CanvasComponent`; they render as
 part of the parent canvas. A child that has one becomes an independent canvas.
 
-Source: `libs/V12.basic/libs/V12/Components/UI/`, docs at
-`libs/V12.basic/libs/V12/Docs/UI_OVERVIEW.md`.
+Source: `libs/V12.Basic/libs/V12/Components/UI/`, docs at
+`libs/V12.Basic/libs/V12/Docs/UI_OVERVIEW.md`.
 
 ---
 
 ## 2. The two delivery channels in `GameRoot`
 
-`libs/V12.basic/libs/V12/Core/GameRoot.cs` offers two ways a renderer can receive work,
+`libs/V12.Basic/libs/V12/Core/GameRoot.cs` offers two ways a renderer can receive work,
 and **neither carries UI data**:
 
 ### a. `RenderPacket` — push path (legacy)
@@ -194,12 +194,12 @@ the UI data ever crossing the 3D pipeline.
 ## 7. Key files
 
 **This repo**
-- `libs/V12.basic/libs/V12/Core/GameRoot.cs` — `V12Tick`, `GetAllRenderables`, `CaptureFrame`
-- `libs/V12.basic/libs/V12/Core/Rendering/FrameSnapshot.cs` — `RenderableSnapshot`, `FrameSnapshot`
-- `libs/V12.basic/libs/V12/Core/Interfaces/Renderer/RenderPackets.cs` — `RenderPacket`
-- `libs/V12.basic/libs/V12/Core/Interfaces/Renderer/IRenderer.cs` — renderer contract
-- `libs/V12.basic/libs/V12/Components/UI/` — UI components
-- `libs/V12.basic/libs/V12/Docs/UI_OVERVIEW.md` — UI model + host pipeline
+- `libs/V12.Basic/libs/V12/Core/GameRoot.cs` — `V12Tick`, `GetAllRenderables`, `CaptureFrame`
+- `libs/V12.Basic/libs/V12/Core/Rendering/FrameSnapshot.cs` — `RenderableSnapshot`, `FrameSnapshot`
+- `libs/V12.Basic/libs/V12/Core/Interfaces/Renderer/RenderPackets.cs` — `RenderPacket`
+- `libs/V12.Basic/libs/V12/Core/Interfaces/Renderer/IRenderer.cs` — renderer contract
+- `libs/V12.Basic/libs/V12/Components/UI/` — UI components
+- `libs/V12.Basic/libs/V12/Docs/UI_OVERVIEW.md` — UI model + host pipeline
 - `libs/V12.Monogame/V12.Monogame/MonogameV12Renderer.cs` — minimal renderer
 
 **Nova (`G:\git\EcoVR\libs\nova`)**

@@ -15,7 +15,7 @@ Contract entry script's `Main` runs, and `OnUpdate` ticks every frame.
     SpinWorld/
       worlds/SpinWorld/world.xml
       scripts/Main.ct
-  Scramble.csproj        # references libs/V12.basic/libs/V12.Pak (Contract-enabled)
+  Scramble.csproj        # references libs/V12.Basic/libs/V12.Pak (Contract-enabled)
 ```
 
 At runtime the launcher looks for `games/` next to the executable first and
