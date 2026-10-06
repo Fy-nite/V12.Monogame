@@ -1,17 +1,23 @@
-# Contract (`.ct`) Scripting in V12
+# Contract (`.ct`) / ObjektRT Scripting in V12
 
-V12 can run Contract scripts in three ways, all driven from the same
-`V12.Bindings` assembly:
+V12 runs scripts in two formats, both driven from the same `V12.Bindings`
+assembly, in three flavors:
+
+| Format | Load path | Runtime class |
+| --- | --- | --- |
+| `.ct` Contract source | Compiled on load (lex → parse → analyze → ObjektRT IL) | `ContractScriptRuntime` / `ContractGamepack` |
+| `.orbt` / `.oil` compiled ObjektRT module | Loaded as-is (no compile step) | `ObjektRTScriptRuntime` / `ObjektRTGamepak` |
 
 | Flavor | Where it runs | Entry points |
 | --- | --- | --- |
 | Element script (`ScriptComponent`) | Attached to one element | `on_init()`, `on_update(dt)`, `on_action(name, value)`, `on_interact()` |
 | Component type (`ContractComponentRegistry`) | Reusable component attached to many elements | `constructor()`, `on_attach()`, `on_update(dt)`, `on_detach()` |
-| Gamepack (`ContractGamepack` / `ContractV12Host`) | Entry point inside a `.v12pak` | `Main`, `OnUpdate(dt)` |
+| Gamepack (`ContractGamepack` / `ObjektRTGamepak`) | Entry point inside a `.v12pak` | `Main`, `OnUpdate(dt)` |
 
 Inside every flavor the owning element is available as a `long` id via
 `V12.Script.Owner()` (0 when none), and all engine bindings are under the
-`V12.*` names below.
+`V12.*` names below — compiled `.orbt` modules resolve them the same way
+(the host registers the binding assemblies before loading the module).
 
 > **Important — builtins are not global.** As of the current Contract, the
 > standard library (`IO`, `Math`, …) lives under the reserved `__builtin`
@@ -36,7 +42,8 @@ elems.AddComponent(new ScriptComponent { ScriptText = "fn on_init() { ... }" });
 ```
 
 - The runtime is chosen by extension via `ScriptRuntimeRegistry`
-  (`V12ScriptRuntimeRegistration.RegisterAll`): `.ct` → Contract, `.lua` →
+  (`V12ScriptRuntimeRegistration.RegisterAll`): `.ct` → Contract (compile on
+  load), `.orbt`/`.oil` → ObjektRT (load precompiled module), `.lua` →
   MoonSharp. MoonSharp is the default for extensionless inline sources.
 - `Source` is resolved through the registered `IAssetResolver`; if none is
   set or it returns nothing, the literal path (relative to the working
@@ -44,8 +51,8 @@ elems.AddComponent(new ScriptComponent { ScriptText = "fn on_init() { ... }" });
 - Top-level functions named `on_init`, `on_update`, and any name called via
   `CallEvent`/`Call` are invoked; `on_init` runs once at load.
 - Hot reload: `ScriptSystem` watches the `scripts/` folders of mounted asset
-  paths and calls `Reload()` on every initialized script when a `.ct`/`.lua`
-  file changes.
+  paths and calls `Reload()` on every initialized script when a
+  `.ct`/`.orbt`/`.oil`/`.lua` file changes.
 
 ```ct
 import __builtin.std;
@@ -111,20 +118,92 @@ Contract Spin {
 - Attach from C#:
   `ContractComponentRegistry.FromGameRoot().Attach(element, "Spin")`,
   or from a script: `V12.Components.AddContractComponent(id, "Spin")`.
-- The registry installs a `FileSystemWatcher` on `scripts/components`; edits
-  recompile all known files. **Note:** reload affects instances created
-  *after* the reload — live instances keep the module they were built with.
+- The registry scans `scripts/components/` for `.ct` sources **and**
+  `.orbt`/`.oil` compiled modules at startup (working directory first, then
+  the executable directory — the first non-empty one wins), and its
+  `FileSystemWatcher` reloads on edits to any of those extensions. **Note:**
+  reload affects instances created *after* the reload — live instances keep
+  the module they were built with.
 - From C# you can read/write instance fields via
   `ContractComponent.GetFloat/SetFloat/GetInt/SetInt/GetBool/SetBool/GetString/SetString`.
 
-## Gamepacks (`.v12pak`)
+## Gamepaks (`.v12pak`)
 
-Files under `scripts/` in a `.v12pak` are compiled as `ContractGamepack`s by
-the pak loader and run through the same two-phase gamepak lifecycle: `Main`
-runs once at startup, `OnUpdate(dt)` ticks per frame. The host is
-`ContractV12Host`; failed compiles raise `ContractCompileException` and a
-failed reload keeps the previous module and running scene. On reload, root
-elements spawned by the previous run are despawned before `Main` runs again.
+Files under `scripts/` in a `.v12pak` become gamepaks, dispatched by
+extension when the pak loader builds the manifest:
+
+- `.ct` → `ContractGamepack`: compiled on start by `ContractV12Host`; failed
+  compiles raise `ContractCompileException` and a failed reload keeps the
+  previous module and running scene. On reload, root elements spawned by the
+  previous run are despawned before `Main` runs again.
+- `.orbt`/`.oil` → `ObjektRTGamepak`: the compiled module is loaded as-is by
+  `ObjektRTModuleLoader` (statically linking any import table against the
+  module's directory), its `Main` runs once at startup.
+
+Both run through the same two-phase gamepak lifecycle and tick
+`OnUpdate(dt)` per frame through a shared `ScriptTickService`.
+
+### Shipping compiled modules
+
+Author in `.ct`, compile with `ccl`, drop the `.orbt` next to (or instead of)
+the source:
+
+```bash
+ccl -c scripts/Main.ct --bind path/to/V12.Bindings.dll -o scripts/Main.orbt
+```
+
+Multi-module projects should build with `ccl build --static` so imports are
+resolved at build time; un-linked modules with imports are static-linked on
+load against the module's own directory. The pak builder globs
+`scripts/**/*.{ct,orbt,oil}` into the manifest, so a compiled entrypoint
+ships exactly like a source one.
+
+### `.dll` gamepaks
+
+C# gamepaks are a separate, already-supported path: put them under `paks/`
+in the pak input directory (recorded in `manifest.Paks`) and load with
+`V12PakOptions { LoadDlls = true }`. The launcher keeps `LoadDlls = false`
+for user-facing games (same trust tier as running scripts); the dev path in
+`bootstrap.cs` enables it.
+
+## Editor support (LSP) — the `.coi` package
+
+The Contract language server resolves the `V12.*` `[ClassBinding]` modules
+from a `.coi` package installed under `<projectRoot>/.purr/packages/`, where
+the project root is marked by a `contract.ctproj` file. Run once (and after
+each engine build) from the repo root:
+
+```powershell
+./install-v12-coi.ps1
+```
+
+This writes `contract.ctproj` markers (SpinWorld game scripts + the repo's
+demo `scripts/` tree), extracts `v12.bindings` into `.purr/packages/` with
+the binding DLLs, and — when `ccl` is on PATH — generates a facade module
+over `V12.dll` so engine types complete in the editor too. Restart the LSP
+(reload the VS Code window) after running it.
+
+### `ccl bindgen` — facades for any assembly
+
+Generate Contract bindings from a .NET assembly yourself:
+
+```bash
+ccl bindgen V12.dll -o facades/                          # one .ct per namespace
+ccl bindgen V12.dll --coi v12.coi --bind V12.Bindings.dll # + installable .coi
+```
+
+Emits one `<ClrImport(Type: "...", Path: "...")>` facade per public type,
+split into one `.ct` file per namespace (each importing its siblings — keep
+the files together in one directory). `--bind` assemblies contribute their
+`[ClassBinding]` names as reserved, so bound facades are never re-declared as
+CLR types. The generated files resolve in the LSP (the analyzer resolves
+`ClrImport` + `Path`, and `import V12.Core;` finds each file by its namespace
+declaration); the `--coi` output compiles each file to a `.orbt` module
+packed with the assembly — the manifest maps every namespace plus its
+ancestor prefixes — installable via `ccl install v12.coi`. Bindings-only
+packages also pack: `ccl pack MyBindings --bind MyBindings.dll`. Full
+reference: [BINDGEN.md](../libs/V12.Basic/libs/Contract/docs/BINDGEN.md) in
+the Contract repo.
 
 ## Bindings API
 

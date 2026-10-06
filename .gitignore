@@ -38,3 +38,7 @@ target/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+## Contract LSP tooling (regenerate with install-v12-coi.ps1)
+.purr/
+*.coi

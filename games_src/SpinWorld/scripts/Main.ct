@@ -2,7 +2,7 @@ import __builtin.std;
 
 // SpinWorld's Contract gamepak: compiled and run by ContractGamepack.
 // Main() runs once at startup; OnUpdate(dt) ticks every frame.
-
+// <AssemblyRef(Path: "../../../libs/V12.Monogame/V12.Monogame.GL/bin/Debug/net10.0/V12.Bindings.dll")>
 Contract Program {
     static angle: float;
     static spinId: long;
