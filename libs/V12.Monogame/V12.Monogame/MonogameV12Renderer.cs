@@ -10,6 +10,7 @@ using V12.Core.Core.Interfaces;
 using V12.Core.Interfaces;
 using V12.Core.Interfaces.Renderer;
 using V12.Core.Rendering;
+using V12.Core.UI;
 
 namespace V12.Monogame
 {
@@ -44,6 +45,7 @@ namespace V12.Monogame
 
         private RenderPacket? _packet;
         private FrameSnapshot? _snapshot;
+        private readonly Dictionary<long, RenderTarget2D> _viewportTargets = new();
 
         private bool _lockMouse;
         private int _framesSinceFps;
@@ -126,21 +128,147 @@ namespace V12.Monogame
 
         public void ApplySnapshot(FrameSnapshot snapshot) => _snapshot = snapshot;
 
+        // ── Editor primitives ────────────────────────────────────────────────
+        // The renderer only exposes data and device access. Picking, the orbit
+        // camera and the gizmo live in V12 core (ViewportInteractionService),
+        // exactly as nova keeps that logic in WorldCanvasSystem rather than
+        // Renderer; MonogameViewportHost adapts these members to it.
+
+        /// <summary>
+        /// Editor hook: invoked once per rendered viewport (and for the main
+        /// screen) after the meshes of that pass are drawn, with the pass's
+        /// camera. Return world-space line-list geometry (pairs of
+        /// <see cref="VertexPositionColor"/>) to be drawn undepth-tested over
+        /// the pass, or null for nothing. Keep it cheap — called every frame.
+        /// </summary>
+        public Func<long, Matrix, Matrix, VertexPositionColor[]?>? ViewportOverlay { get; set; }
+
+        /// <summary>Camera matrices used to render <paramref name="viewportId"/>
+        /// (same source of truth as drawing, so pick rays line up with pixels).</summary>
+        public bool TryGetViewportCamera(long viewportId, out Matrix view, out Matrix proj)
+        {
+            view = Matrix.Identity;
+            proj = Matrix.Identity;
+            var gumUi = _root.Registry.Get<GumUIRenderer>();
+            if (gumUi == null || !gumUi.TryGetViewportRect(viewportId, out var rect, out _)) return false;
+            if (rect.Width <= 0 || rect.Height <= 0) return false;
+            ResolveCamera((float)rect.Width / rect.Height, out view, out proj);
+            return true;
+        }
+
+        /// <summary>Fill <paramref name="into"/> with the meshes drawn in
+        /// <paramref name="viewportId"/> this frame (cleared first).</summary>
+        public void CollectPickMeshes(long viewportId, List<ViewportPickMesh> into)
+        {
+            into.Clear();
+            var packet = _packet;
+            if (packet == null) return;
+            for (int i = 0; i < packet.Meshes.Count; i++)
+            {
+                var draw = packet.Meshes[i];
+                if (draw.ViewportId != viewportId) continue;
+                var mesh = draw.Mesh;
+                if (mesh == null) continue;
+                var points = mesh.MeshPoints;
+                var indices = mesh.Indices;
+                if (points == null || indices == null || points.Length < 9 || indices.Length < 3) continue;
+                into.Add(new ViewportPickMesh(
+                    world: ResolveTransform(mesh),
+                    points: mesh.MeshPoints,
+                    indices: mesh.Indices,
+                    owner: (mesh as ComponentBase)?.Owner));
+
+            }
+        }
+
+        /// <summary>Draw a world-space line list with the current pass's camera.
+        /// Device is mid-frame: only call from <see cref="ViewportOverlay"/>.</summary>
+        public void DrawOverlayLines(VertexPositionColor[] lines, Matrix view, Matrix proj)
+        {
+            if (lines == null || lines.Length < 2) return;
+            _effect.LightingEnabled = false;
+            _effect.VertexColorEnabled = true;
+            _effect.TextureEnabled = false;
+            _effect.World = Matrix.Identity;
+            _effect.View = view;
+            _effect.Projection = proj;
+            // Always on top: the gizmo must stay readable over the mesh it moves.
+            _gd.DepthStencilState = DepthStencilState.None;
+            _gd.RasterizerState = RasterizerState.CullNone;
+            _gd.BlendState = BlendState.AlphaBlend;
+            foreach (var pass in _effect.CurrentTechnique.Passes)
+            {
+                pass.Apply();
+                _gd.DrawUserPrimitives(PrimitiveType.LineList, lines, 0, lines.Length / 2);
+            }
+        }
+
+        private void InvokeOverlay(long viewportId, Matrix view, Matrix proj)
+        {
+            var overlay = ViewportOverlay;
+            if (overlay == null) return;
+            VertexPositionColor[]? lines;
+            try { lines = overlay(viewportId, view, proj); }
+            catch (Exception ex) { Console.WriteLine($"[MonogameRenderer] ViewportOverlay threw: {ex.Message}"); return; }
+            if (lines != null && lines.Length >= 2) DrawOverlayLines(lines, view, proj);
+        }
+
         // ── Drawing ──────────────────────────────────────────────────────────
 
         public void DrawFrame()
         {
             UpdateFps();
 
-            _gd.Clear(Color.CornflowerBlue);
-            _gd.DepthStencilState = DepthStencilState.Default;
-            _gd.RasterizerState = RasterizerState.CullNone;
-            _gd.BlendState = BlendState.Opaque;
-
             var packet = _packet;
             if (packet == null || packet.Meshes.Count == 0) return;
 
-            ResolveCamera(out var view, out var projection);
+            var groups = new Dictionary<long, List<MeshDraw>>();
+            foreach (var draw in packet.Meshes)
+            {
+                if (!groups.TryGetValue(draw.ViewportId, out var list))
+                    groups[draw.ViewportId] = list = new List<MeshDraw>();
+                list.Add(draw);
+            }
+
+            var gumUi = _root.Registry.Get<GumUIRenderer>();
+
+            // Pass 1: viewport groups — render each into its own RenderTarget2D sized
+            // to the viewport panel Gum laid out. Gum picks the texture up via
+            // <see cref="GetViewportTexture"/>.
+            foreach (var group in groups)
+            {
+                if (group.Key == 0) continue;
+                if (gumUi == null || !gumUi.TryGetViewportRect(group.Key, out var vpRect, out var vpColor))
+                    continue;
+                if (vpRect.Width <= 0 || vpRect.Height <= 0) continue;
+
+                var rt = GetOrCreateViewportTarget(group.Key, vpRect.Width, vpRect.Height);
+                _gd.SetRenderTarget(rt);
+                _gd.Viewport = new Viewport(0, 0, rt.Width, rt.Height);
+                _gd.Clear(vpColor);
+                _gd.DepthStencilState = DepthStencilState.Default;
+                // Explicit: Gum's SpriteBatch leaves CullCounterClockwise behind,
+                // which culls the wrong faces for V12 meshes (inside-out look).
+                _gd.RasterizerState = RasterizerState.CullNone;
+                _gd.BlendState = BlendState.Opaque;
+
+                float aspect = rt.Height > 0 ? (float)rt.Width / rt.Height : 16f / 9f;
+                ResolveCamera(aspect, out var vpView, out var vpProj);
+                DrawMeshes(group.Value, vpView, vpProj);
+                InvokeOverlay(group.Key, vpView, vpProj);
+
+                _gd.SetRenderTarget(null);
+                _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
+            }
+
+            // Pass 2: main screen meshes (ViewportId == 0).
+            _gd.SetRenderTarget(null);
+            _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
+            // Dark editor backdrop (UI panels are transparent; cornflower would shine through).
+            _gd.Clear(new Color(0x1e, 0x1e, 0x24));
+            _gd.DepthStencilState = DepthStencilState.Default;
+            _gd.RasterizerState = RasterizerState.CullNone;
+            _gd.BlendState = BlendState.Opaque;
 
             if (!_loggedFirstFrame)
             {
@@ -148,6 +276,16 @@ namespace V12.Monogame
                 Console.WriteLine($"[MonogameRenderer] first frame: {packet.Meshes.Count} mesh(es), camera '{_lastCameraName}'");
             }
 
+            float screenAspect = _gd.Viewport.Height > 0 ? (float)_gd.Viewport.Width / _gd.Viewport.Height : 16f / 9f;
+            ResolveCamera(screenAspect, out var view, out var projection);
+            if (groups.TryGetValue(0, out var mainMeshes))
+                DrawMeshes(mainMeshes, view, projection);
+            // Overlay intentionally not invoked on the main pass: the editor
+            // gizmo belongs in the viewport RTs where the scene actually shows.
+        }
+
+        private void DrawMeshes(IEnumerable<MeshDraw> meshes, Matrix view, Matrix projection)
+        {
             _effect.View = view;
             _effect.Projection = projection;
             _effect.World = Matrix.Identity;
@@ -158,7 +296,7 @@ namespace V12.Monogame
             _effect.TextureEnabled = false;
             _effect.DiffuseColor = Vector3.One;
 
-            foreach (var draw in packet.Meshes)
+            foreach (var draw in meshes)
             {
                 var mesh = draw.Mesh;
                 if (mesh == null) continue;
@@ -182,6 +320,26 @@ namespace V12.Monogame
             }
         }
 
+        /// <summary>Render target a viewport group was drawn into last frame (null until first draw).</summary>
+        public RenderTarget2D? GetViewportTexture(long viewportId)
+        {
+            _viewportTargets.TryGetValue(viewportId, out var rt);
+            return rt;
+        }
+
+        private RenderTarget2D GetOrCreateViewportTarget(long viewportId, int width, int height)
+        {
+            if (_viewportTargets.TryGetValue(viewportId, out var rt))
+            {
+                if (rt.Width == width && rt.Height == height) return rt;
+                rt.Dispose();
+                _viewportTargets.Remove(viewportId);
+            }
+            rt = new RenderTarget2D(_gd, width, height, false, SurfaceFormat.Color, DepthFormat.Depth24, 0, RenderTargetUsage.PreserveContents);
+            _viewportTargets[viewportId] = rt;
+            return rt;
+        }
+
         private void UpdateFps()
         {
             _framesSinceFps++;
@@ -198,10 +356,8 @@ namespace V12.Monogame
         /// Uses the owning element's world transform (the camera component's own transform
         /// is local-only for a child of the Player).
         /// </summary>
-        private void ResolveCamera(out Matrix view, out Matrix projection)
+        private void ResolveCamera(float aspect, out Matrix view, out Matrix projection)
         {
-            float aspect = _gd.Viewport.Height > 0 ? (float)_gd.Viewport.Width / _gd.Viewport.Height : 16f / 9f;
-
             var snapshot = _snapshot;
             if (snapshot != null)
             {
