@@ -48,6 +48,14 @@ namespace V12.Monogame
         private FrameSnapshot? _snapshot;
         private readonly Dictionary<long, RenderTarget2D> _viewportTargets = new();
 
+        // ── Hierarchy mirror ─────────────────────────────────────────────
+        // V12 determines placement; this renderer mirrors the element tree
+        // from packet.Nodes (element id → parent id + element-local matrix)
+        // and composes world matrices itself — the Godot tree accumulates the
+        // same way. Meshes add their mesh-local offset on top. Rebuilt every
+        // time a packet arrives (packets only arrive on change).
+        private readonly Dictionary<long, System.Numerics.Matrix4x4> _mirrorWorlds = new();
+
         private bool _lockMouse;
         private int _framesSinceFps;
         private int _fps;
@@ -87,7 +95,49 @@ namespace V12.Monogame
 
         public int GetScreenHeight() => _gd.Viewport.Height;
 
-        public void QueueItems(RenderPacket packet) => _packet = packet;
+        public void QueueItems(RenderPacket packet)
+        {
+            _packet = packet;
+            RebuildMirror(packet);
+        }
+
+        private void RebuildMirror(RenderPacket packet)
+        {
+            _mirrorWorlds.Clear();
+            var locals = new Dictionary<long, (long parent, System.Numerics.Matrix4x4 local)>(packet.Nodes.Count);
+            foreach (var n in packet.Nodes)
+                locals[n.ElementId] = (n.ParentId, n.Local);
+            var resolving = new HashSet<long>();
+            foreach (var n in packet.Nodes)
+                _mirrorWorlds[n.ElementId] = ResolveNodeWorld(n.ElementId, locals, resolving);
+        }
+
+        private System.Numerics.Matrix4x4 ResolveNodeWorld(long id,
+            Dictionary<long, (long parent, System.Numerics.Matrix4x4 local)> locals,
+            HashSet<long> resolving)
+        {
+            if (_mirrorWorlds.TryGetValue(id, out var done)) return done;
+            if (!locals.TryGetValue(id, out var node)) return System.Numerics.Matrix4x4.Identity;
+            if (!resolving.Add(id)) return node.local; // cycle guard (malformed tree)
+            System.Numerics.Matrix4x4 parentWorld = System.Numerics.Matrix4x4.Identity;
+            if (node.parent != 0)
+                parentWorld = ResolveNodeWorld(node.parent, locals, resolving);
+            resolving.Remove(id);
+            var world = node.local * parentWorld; // row-vector order: local × parent
+            _mirrorWorlds[id] = world;
+            return world;
+        }
+
+        /// <summary>Fully composed mesh world matrix from the mirror.
+        /// Meshes carry no transforms — placement lives only on elements —
+        /// so this is the element's world. Falls back to identity when the
+        /// element is absent (stale packet).</summary>
+        private System.Numerics.Matrix4x4 MeshDrawWorld(MeshDraw draw)
+        {
+            if (_mirrorWorlds.TryGetValue(draw.ElementId, out var elementWorld))
+                return elementWorld;
+            return System.Numerics.Matrix4x4.Identity;
+        }
 
         public void RemoveItems(RenderPacket packet)
         {
@@ -102,12 +152,16 @@ namespace V12.Monogame
             }
         }
 
+        // (Single-item pushes bypass the world walk, so the mirror may lack
+        // their ancestors: MeshDrawWorld then falls back to the mesh-local
+        // matrix for those draws.)
         [Obsolete("use QueueItems instead of QueueItem for better performance")]
         public void QueueItem(IRenderable item)
         {
             if (item is not IMeshRenderable mesh) return;
             _packet ??= new RenderPacket();
-            _packet.Meshes.Add(new MeshDraw { Transform = mesh.Transform, Mesh = mesh });
+            long id = (mesh as ComponentBase)?.Owner?.Id ?? 0;
+            _packet.Meshes.Add(new MeshDraw { ElementId = id, Mesh = mesh, ViewportId = 0 });
         }
 
         [Obsolete("use RemoveItems instead of RemoveItem for better performance")]
@@ -134,15 +188,6 @@ namespace V12.Monogame
         // camera and the gizmo live in V12 core (ViewportInteractionService),
         // exactly as nova keeps that logic in WorldCanvasSystem rather than
         // Renderer; MonogameViewportHost adapts these members to it.
-
-        /// <summary>
-        /// Editor hook: invoked once per rendered viewport (and for the main
-        /// screen) after the meshes of that pass are drawn, with the pass's
-        /// camera. Return world-space line-list geometry (pairs of
-        /// <see cref="VertexPositionColor"/>) to be drawn undepth-tested over
-        /// the pass, or null for nothing. Keep it cheap — called every frame.
-        /// </summary>
-        public Func<long, Matrix, Matrix, VertexPositionColor[]?>? ViewportOverlay { get; set; }
 
         /// <summary>Camera matrices used to render <paramref name="viewportId"/>
         /// (same source of truth as drawing, so pick rays line up with pixels).</summary>
@@ -174,44 +219,12 @@ namespace V12.Monogame
                 var indices = mesh.Indices;
                 if (points == null || indices == null || points.Length < 9 || indices.Length < 3) continue;
                 into.Add(new ViewportPickMesh(
-                    world: ResolveTransform(mesh),
+                    world: MeshDrawWorld(draw),
                     points: mesh.MeshPoints,
                     indices: mesh.Indices,
                     owner: (mesh as ComponentBase)?.Owner));
 
             }
-        }
-
-        /// <summary>Draw a world-space line list with the current pass's camera.
-        /// Device is mid-frame: only call from <see cref="ViewportOverlay"/>.</summary>
-        public void DrawOverlayLines(VertexPositionColor[] lines, Matrix view, Matrix proj)
-        {
-            if (lines == null || lines.Length < 2) return;
-            _effect.LightingEnabled = false;
-            _effect.VertexColorEnabled = true;
-            _effect.TextureEnabled = false;
-            _effect.World = Matrix.Identity;
-            _effect.View = view;
-            _effect.Projection = proj;
-            // Always on top: the gizmo must stay readable over the mesh it moves.
-            _gd.DepthStencilState = DepthStencilState.None;
-            _gd.RasterizerState = RasterizerState.CullNone;
-            _gd.BlendState = BlendState.AlphaBlend;
-            foreach (var pass in _effect.CurrentTechnique.Passes)
-            {
-                pass.Apply();
-                _gd.DrawUserPrimitives(PrimitiveType.LineList, lines, 0, lines.Length / 2);
-            }
-        }
-
-        private void InvokeOverlay(long viewportId, Matrix view, Matrix proj)
-        {
-            var overlay = ViewportOverlay;
-            if (overlay == null) return;
-            VertexPositionColor[]? lines;
-            try { lines = overlay(viewportId, view, proj); }
-            catch (Exception ex) { Console.WriteLine($"[MonogameRenderer] ViewportOverlay threw: {ex.Message}"); return; }
-            if (lines != null && lines.Length >= 2) DrawOverlayLines(lines, view, proj);
         }
 
         // ── Drawing ──────────────────────────────────────────────────────────
@@ -256,7 +269,6 @@ namespace V12.Monogame
                 float aspect = rt.Height > 0 ? (float)rt.Width / rt.Height : 16f / 9f;
                 ResolveCamera(aspect, out var vpView, out var vpProj);
                 DrawMeshes(group.Value, vpView, vpProj);
-                InvokeOverlay(group.Key, vpView, vpProj);
 
                 _gd.SetRenderTarget(null);
                 _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
@@ -312,7 +324,7 @@ namespace V12.Monogame
                 _effect.LightingEnabled = !unlit;
                 _gd.DepthStencilState = noDepth ? DepthStencilState.None : DepthStencilState.Default;
 
-                _effect.World = V12MonogameMath.ToXna(ResolveTransform(mesh));
+                _effect.World = V12MonogameMath.ToXna(MeshDrawWorld(draw));
                 _gd.SetVertexBuffer(gpu.VertexBuffer);
                 _gd.Indices = gpu.IndexBuffer;
 
@@ -423,20 +435,6 @@ namespace V12.Monogame
                 aspect,
                 near <= 0f ? 0.05f : near,
                 far <= near ? near + 1000f : far);
-        }
-
-        /// <summary>
-        /// Resolve the transform to use for a mesh. <see cref="MeshRenderer.Transform"/>
-        /// drops the mesh's Width/Height/Depth, so unwrap to the underlying
-        /// <see cref="MeshComponent"/> whose transform applies them.
-        /// </summary>
-        private static System.Numerics.Matrix4x4 ResolveTransform(IMeshRenderable mesh)
-        {
-            if (mesh is MeshRenderer renderer && renderer.Mesh is MeshComponent wrapped)
-                return wrapped.Transform;
-            if (mesh is MeshComponent component)
-                return component.Transform;
-            return mesh.Transform;
         }
 
         private GpuMesh? GetOrBuildGpuMesh(IMeshRenderable mesh)

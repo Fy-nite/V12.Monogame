@@ -18,7 +18,7 @@ namespace V12.Monogame
     /// <summary>
     /// MonoGame adapter for the core viewport interaction: exposes the renderer
     /// primitives (viewport hit-testing, camera matrices, pick meshes,
-    /// screen-space projection, overlay lines) as <see cref="IViewportInteractionHost"/>
+    /// screen-space projection) as <see cref="IViewportInteractionHost"/>
     /// and raw mouse/keyboard state as <see cref="IEditorInputSource"/>, so the
     /// orbit / picking / gizmo logic itself lives in V12 core
     /// (<c>ViewportInteractionService</c>) and stays host-agnostic — nova
@@ -29,8 +29,6 @@ namespace V12.Monogame
         private readonly XnaGame _game;
         private readonly GumUIRenderer _ui;
         private readonly MonogameV12Renderer _renderer;
-
-        private Func<long, Matrix4x4, Matrix4x4, ViewportLine[]?>? _overlay;
 
         public MonogameViewportHost(XnaGame game, GumUIRenderer ui, MonogameV12Renderer renderer)
         {
@@ -116,34 +114,6 @@ namespace V12.Monogame
 
         public void CollectPickMeshes(long viewportId, List<ViewportPickMesh> into)
             => _renderer.CollectPickMeshes(viewportId, into);
-
-        public Func<long, Matrix4x4, Matrix4x4, ViewportLine[]?>? ViewportOverlay
-        {
-            get => _overlay;
-            set
-            {
-                _overlay = value;
-                _renderer.ViewportOverlay = value == null
-                    ? null
-                    : (viewportId, xv, xp) =>
-                    {
-                        var lines = value(viewportId,
-                            V12MonogameMath.ToNumerics(xv), V12MonogameMath.ToNumerics(xp));
-                        if (lines == null || lines.Length == 0) return null;
-                        var verts = new XnaVertPosCol[lines.Length * 2];
-                        for (int i = 0; i < lines.Length; i++)
-                        {
-                            var c = lines[i].Color;
-                            var xna = new Microsoft.Xna.Framework.Color(c.R, c.G, c.B, c.A);
-                            var a = lines[i].A;
-                            var b = lines[i].B;
-                            verts[i * 2] = new XnaVertPosCol(new XnaVec3(a.X, a.Y, a.Z), xna);
-                            verts[i * 2 + 1] = new XnaVertPosCol(new XnaVec3(b.X, b.Y, b.Z), xna);
-                        }
-                        return verts;
-                    };
-            }
-        }
 
         private bool TryGetLocalViewport(long viewportId, out XnaRect rect)
         {
