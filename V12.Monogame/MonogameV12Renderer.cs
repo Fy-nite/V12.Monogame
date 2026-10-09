@@ -304,6 +304,13 @@ namespace V12.Monogame
                 var gpu = GetOrBuildGpuMesh(mesh);
                 if (gpu == null) continue;
 
+                // Per-mesh draw flags from the owner's MaterialComponent:
+                // gizmo handles render flat and on top, everything else stays
+                // lit and depth-tested. pass.Apply() below picks the change up.
+                ResolveDrawFlags(mesh, out bool unlit, out bool noDepth);
+                _effect.LightingEnabled = !unlit;
+                _gd.DepthStencilState = noDepth ? DepthStencilState.None : DepthStencilState.Default;
+
                 _effect.World = V12MonogameMath.ToXna(ResolveTransform(mesh));
                 _gd.SetVertexBuffer(gpu.VertexBuffer);
                 _gd.Indices = gpu.IndexBuffer;
@@ -522,6 +529,21 @@ namespace V12.Monogame
                     return new Color(material.R, material.G, material.B, material.A);
             }
             return new Color(0.8f, 0.8f, 0.8f, 1f);
+        }
+
+        private static void ResolveDrawFlags(IMeshRenderable mesh, out bool unlit, out bool noDepthTest)
+        {
+            unlit = false;
+            noDepthTest = false;
+            if (mesh is ComponentBase component && component.Owner != null)
+            {
+                var material = component.Owner.GetComponent<MaterialComponent>();
+                if (material != null)
+                {
+                    unlit = material.Unlit;
+                    noDepthTest = material.NoDepthTest;
+                }
+            }
         }
     }
 }
