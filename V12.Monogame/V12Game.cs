@@ -2,6 +2,7 @@ using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
 using V12.Core;
+using V12.Core.UI;
 
 namespace V12.Monogame
 {
@@ -23,6 +24,8 @@ namespace V12.Monogame
         private bool _escapeWasDown;
         private bool _tabWasDown;
         private bool _loggedCaptureHint;
+        private int _lastBackBufferWidth;
+        private int _lastBackBufferHeight;
 
         public V12Game(Action<GameRoot> configureServices)
         {
@@ -38,6 +41,27 @@ namespace V12.Monogame
             IsMouseVisible = true;
             Window.AllowUserResizing = true;
             Window.Title = "V12 (MonoGame)";
+            Window.ClientSizeChanged += OnClientSizeChanged;
+        }
+
+        private bool _resizing;
+
+        /// <summary>Keep the backbuffer (and therefore the Gum canvas) in sync with the window.</summary>
+        private void OnClientSizeChanged(object? sender, EventArgs e)
+        {
+            if (_resizing) return;
+            var b = Window.ClientBounds;
+            if (b.Width <= 0 || b.Height <= 0) return; // minimized
+            if (b.Width == _graphics.PreferredBackBufferWidth && b.Height == _graphics.PreferredBackBufferHeight) return;
+
+            _resizing = true;
+            try
+            {
+                _graphics.PreferredBackBufferWidth = b.Width;
+                _graphics.PreferredBackBufferHeight = b.Height;
+                _graphics.ApplyChanges();
+            }
+            finally { _resizing = false; }
         }
 
         public GameRoot Root => _root!;
@@ -58,11 +82,24 @@ namespace V12.Monogame
             _uiRenderer = new GumUIRenderer(this, _root);
             _root.Registry.Register("IUIRenderer", _uiRenderer);
 
-            // Host-supplied game services (e.g. the sample Bootstrap).
-            _configureServices(_root);
+            // Editor viewport interaction (orbit camera) — registered before
+            // gamepaks run so the editor resolves it during OnStart (the nova
+            // host provides the same interface; without it the log warns and
+            // viewport input stays disabled). Ticks as an IGameService; the
+            // logic lives in V12 core, this host only supplies the adapters.
+            var viewportHost = new MonogameViewportHost(this, _uiRenderer, _renderer);
+            _root.Registry.Register("IViewportInteraction",
+                new ViewportInteractionService(_root, viewportHost, viewportHost));
 
+            // Host-supplied game services (e.g. the sample Bootstrap).
+            // NOTE: create the fallback world BEFORE services/gamepaks run:
+            // gamepak OnStart (e.g. V12 Studio's editor) selects its own world,
+            // and CreateWorld auto-selects — creating Demo afterwards would
+            // steal selection from it, leaving an empty world selected.
             // Bootstrap writes into SelectedWorld, so a world must exist first.
             _root.CreateWorld("Demo", "empty");
+            _configureServices(_root);
+
             _root.Initialize();
 
             _input = new MonogameInputBridge(_root, _renderer);
@@ -81,6 +118,18 @@ namespace V12.Monogame
             HandleMouseCapture();
 
             _input?.Update(deltaTime, IsActive);
+
+            // A window resize/maximize changes layout without a world edit, so
+            // force one dirty frame (re-capture UI + re-layout) when the
+            // backbuffer changes.
+            var pp = GraphicsDevice.PresentationParameters;
+            if (pp.BackBufferWidth != _lastBackBufferWidth || pp.BackBufferHeight != _lastBackBufferHeight)
+            {
+                _lastBackBufferWidth = pp.BackBufferWidth;
+                _lastBackBufferHeight = pp.BackBufferHeight;
+                _root?.MarkRenderDirty();
+            }
+
             _root?.V12Tick(deltaTime);
 
             // Drive Gum (pointer/keyboard) after the frame's UI has been handed over.
