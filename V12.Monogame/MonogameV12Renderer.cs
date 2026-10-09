@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using V12.Components;
@@ -446,7 +447,14 @@ namespace V12.Monogame
                 return null;
 
             var color = ResolveColor(mesh);
-            long signature = ((long)points.Length << 32) ^ indices.Length ^ ((long)color.PackedValue << 1);
+            // Identity, not length: mesh data arrays are replaced — never
+            // mutated in place — so a new array is new geometry even at equal
+            // lengths. A length-only key renders stale geometry forever
+            // (e.g. gizmo handles resizing while dollying keep their first
+            // frame's vertices). Reference hashes are O(1).
+            long signature = ((long)(uint)RuntimeHelpers.GetHashCode(points) << 32)
+                ^ (uint)RuntimeHelpers.GetHashCode(indices)
+                ^ ((long)color.PackedValue << 1);
 
             if (_cache.TryGetValue(mesh, out var existing))
             {
