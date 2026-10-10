@@ -45,6 +45,22 @@ namespace V12.Monogame
         private bool _loggedViewportPlaceholder;
         private bool _loggedLayoutDump;
         private readonly Dictionary<long, Rectangle> _lastRects = new();
+        // ── World-canvas bake (bake-to-quad) ─────────────────────────────
+        // Canvases with ScreenSpace=false are NOT screen overlays: each is laid
+        // out in its own origin-based pixel space, baked to a RenderTarget2D on
+        // dirty UI frames, and drawn by the 3D renderer as a textured world
+        // quad at the canvas element's mirrored world transform. Only UINode /
+        // packet-mirror data crosses the boundary (content-blind per contract).
+        private readonly Dictionary<long, Rectangle> _worldCanvasRects = new();
+        private readonly Dictionary<long, Dictionary<long, Rectangle>> _worldRects = new();
+        private readonly Dictionary<long, List<UINode>> _worldNodes = new();
+        private readonly Dictionary<long, RenderTarget2D> _worldTargets = new();
+        private readonly Dictionary<long, long> _controlCanvas = new();
+        private bool _worldDirty;
+
+        /// <summary>Supersample factor for world-canvas bakes: layout happens in
+        /// content pixels, rasterization at 2x for crisp quads up close.</summary>
+        private const float WorldBakeScale = 2f;
         // Scroll state: per-panel wheel offset, last measured content height,
         // live scroll-panel ids (for wheel hit-testing), nesting flags and the
         // current visual parent (0 = Gum root) for clip-correct reparenting.
@@ -196,6 +212,13 @@ namespace V12.Monogame
                     GumService.Default.Root.Children.Clear();
                     _controls.Clear();
                 }
+                foreach (var rt in _worldTargets.Values)
+                    if (!rt.IsDisposed) rt.Dispose();
+                _worldTargets.Clear();
+                _worldCanvasRects.Clear();
+                _worldRects.Clear();
+                _worldNodes.Clear();
+                _controlCanvas.Clear();
                 return;
             }
 
@@ -227,6 +250,16 @@ namespace V12.Monogame
                     _scrollOffsets.Remove(id);
                     _scrollContentH.Remove(id);
                     _visualParent.Remove(id);
+                    _controlCanvas.Remove(id);
+                    // A removed canvas takes its baked state with it.
+                    _worldCanvasRects.Remove(id);
+                    _worldRects.Remove(id);
+                    _worldNodes.Remove(id);
+                    if (_worldTargets.TryGetValue(id, out var rt))
+                    {
+                        rt.Dispose();
+                        _worldTargets.Remove(id);
+                    }
                 }
             }
 
@@ -241,7 +274,7 @@ namespace V12.Monogame
                 if (node.Kind == UIWidgetKind.Canvas && !node.ScreenSpace && !_loggedWorldSpaceCanvas)
                 {
                     _loggedWorldSpaceCanvas = true;
-                    Console.WriteLine("[GumUIRenderer] world-space canvas: drawn as a screen overlay (bake-to-quad deferred)");
+                    Console.WriteLine("[GumUIRenderer] world-space canvas: baked to a world quad (not a screen overlay)");
                 }
 
                 if (!_controls.TryGetValue(node.Id, out var control))
@@ -933,13 +966,15 @@ namespace V12.Monogame
             };
         }
 
-        private void Arrange(UINode n, Rectangle rect, Dictionary<long, List<UINode>> children)
+        private void Arrange(UINode n, Rectangle rect, Dictionary<long, List<UINode>> children, bool recordViewports = true)
         {
             _lastRects[n.Id] = rect;
             if (_controls.TryGetValue(n.Id, out var control))
                 SetBounds(control, rect);
 
-            if (n.Kind == UIWidgetKind.Viewport)
+            // Viewport rects are screen-space by definition; a viewport nested
+            // under a baked world canvas has no screen rect (degenerate case).
+            if (n.Kind == UIWidgetKind.Viewport && recordViewports)
             {
                 _viewportRects[n.Id] = rect;
                 _viewportColors[n.Id] = ParseColor(n.Color) ?? DefaultViewportColor;
@@ -961,7 +996,7 @@ namespace V12.Monogame
                 foreach (var k in kids)
                 {
                     _nested[k.Id] = false;
-                    Arrange(k, rect, children);
+                    Arrange(k, rect, children, recordViewports);
                 }
                 return;
             }
@@ -1040,7 +1075,7 @@ namespace V12.Monogame
                     ? new Rectangle((int)cursor, (int)(rect.Y + pad), Math.Max(0, (int)size), Math.Max(0, (int)crossSize))
                     : new Rectangle((int)(rect.X + pad), (int)cursor, Math.Max(0, (int)crossSize), Math.Max(0, (int)size));
                 _nested[k.Id] = nestKids;
-                Arrange(k, kr, children);
+                Arrange(k, kr, children, recordViewports);
                 if (_controls.TryGetValue(k.Id, out var kc) && nestKids)
                     SetBounds(kc, new Rectangle(kr.X - (int)rect.X, kr.Y - (int)rect.Y, kr.Width, kr.Height));
                 cursor += size + sp;
@@ -1126,34 +1161,94 @@ namespace V12.Monogame
             return children;
         }
 
-        /// <summary>Top of the layout pass: clears per-viewport rects and arranges the tree.</summary>
+        /// <summary>Top of the layout pass: clears per-viewport rects and arranges the tree.
+        /// Screen-space canvases become screen overlays (existing path). World-space
+        /// canvases are measured and arranged in their own origin-based pixel space
+        /// for RT baking; their controls stay hidden from the overlay draw.</summary>
         private void Layout(List<UINode> nodes, Dictionary<long, UINode> byId, Dictionary<long, List<UINode>> children)
         {
             _viewportRects.Clear();
             _viewportColors.Clear();
             _scrollIds.Clear();
             _nested.Clear();
+            _controlCanvas.Clear();
+
+            // Nearest-canvas membership for every node (drives overlay-vs-bake
+            // partitioning, scroll filtering and overlay visibility below).
             foreach (var node in nodes)
-                if (node.Kind == UIWidgetKind.Scroll) _scrollIds.Add(node.Id);
+            {
+                long canvasId = NearestCanvas(node, byId);
+                if (canvasId != 0)
+                    _controlCanvas[node.Id] = canvasId;
+                if (node.Kind == UIWidgetKind.Scroll && IsOverlayCanvas(canvasId, byId))
+                    _scrollIds.Add(node.Id);
+            }
+
+            _worldCanvasRects.Clear();
+            _worldRects.Clear();
+            _worldNodes.Clear();
 
             foreach (var node in nodes)
             {
                 if (node.Kind != UIWidgetKind.Canvas) continue;
                 if (!_controls.TryGetValue(node.Id, out var control)) continue;
 
-                Rectangle rect;
-                if (node.Width > 0f && node.Height > 0f)
+                if (node.ScreenSpace)
                 {
-                    rect = new Rectangle((int)control.Visual.X, (int)control.Visual.Y, (int)node.Width, (int)node.Height);
+                    Rectangle rect;
+                    if (node.Width > 0f && node.Height > 0f)
+                    {
+                        rect = new Rectangle((int)control.Visual.X, (int)control.Visual.Y, (int)node.Width, (int)node.Height);
+                    }
+                    else
+                    {
+                        rect = new Rectangle(0, 0, (int)GumService.Default.CanvasWidth, (int)GumService.Default.CanvasHeight);
+                    }
+
+                    SetBounds(control, rect);
+                    Arrange(node, rect, children, recordViewports: true);
                 }
                 else
                 {
-                    rect = new Rectangle(0, 0, (int)GumService.Default.CanvasWidth, (int)GumService.Default.CanvasHeight);
-                }
+                    // World canvas: size from content (origin-based), never the screen.
+                    // Content-free canvases (e.g. the UIBuilder root) bake nothing.
+                    if (!children.TryGetValue(node.Id, out var kids) || kids.Count == 0)
+                        continue;
 
-                SetBounds(control, rect);
-                Arrange(node, rect, children);
+                    Size2 content = MeasureCanvasContent(node, children);
+                    int w = Math.Max(8, Math.Min(2048, (int)Math.Ceiling(content.W)));
+                    int h = Math.Max(8, Math.Min(2048, (int)Math.Ceiling(content.H)));
+                    var rect = new Rectangle(0, 0, w, h);
+
+                    SetBounds(control, rect);
+                    Arrange(node, rect, children, recordViewports: false);
+                    _worldCanvasRects[node.Id] = rect;
+
+                    // Snapshot this canvas's subtree rects (canvas-px) + nodes in
+                    // paint order for the bake and for world-space hit-testing.
+                    var included = CollectSubtreeIds(node.Id, children);
+                    var rects = new Dictionary<long, Rectangle>();
+                    foreach (var id in included)
+                        if (_lastRects.TryGetValue(id, out var r))
+                            rects[id] = r;
+                    _worldRects[node.Id] = rects;
+                    var ordered = new List<UINode>();
+                    foreach (var n in nodes)
+                        if (included.Contains(n.Id))
+                            ordered.Add(n);
+                    _worldNodes[node.Id] = ordered;
+                }
             }
+
+            // Overlay shows screen-space controls only; world subtrees are
+            // revealed one at a time inside BakeWorldCanvases.
+            foreach (var kv in _controls)
+            {
+                bool isWorld = _controlCanvas.TryGetValue(kv.Key, out var cid)
+                    && _worldCanvasRects.ContainsKey(cid);
+                kv.Value.Visual.Visible = !isWorld;
+            }
+            _worldDirty = _worldCanvasRects.Count > 0;
 
             if (!_loggedLayoutDump)
             {
@@ -1169,6 +1264,8 @@ namespace V12.Monogame
                 }
                 foreach (var kv in _viewportRects)
                     Console.WriteLine($"  VIEWPORT id={kv.Key} rect={kv.Value} color={_viewportColors[kv.Key]}");
+                foreach (var kv in _worldCanvasRects)
+                    Console.WriteLine($"  WORLDCANVAS id={kv.Key} bake={kv.Value}");
                 Console.WriteLine("[GumUIRenderer] VISUAL DUMP");
                 foreach (var node in nodes)
                 {
@@ -1179,6 +1276,250 @@ namespace V12.Monogame
                     Console.WriteLine($"  id={node.Id} {node.Kind} ctrl={c.GetType().Name} xy=({v.X},{v.Y}) wh=({v.Width}x{v.Height}) abs=({v.AbsoluteX},{v.AbsoluteY} {v.AbsoluteWidth}x{v.AbsoluteHeight}) vis={v.Visible}/{v.AbsoluteVisible} parent={parent} kids={v.Children.Count} origin={v.XOrigin}/{v.YOrigin}/{v.XUnits}/{v.YUnits} porigin={porigin}");
                 }
             }
+        }
+
+        // ── World-canvas bake ──────────────────────────────────────────────
+
+        /// <summary>Nearest canvas ancestor-or-self for a node, or 0 when orphaned.</summary>
+        private static long NearestCanvas(UINode node, Dictionary<long, UINode> byId)
+        {
+            var cur = node;
+            var guard = 0;
+            while (cur != null && guard++ < 1024)
+            {
+                if (cur.Kind == UIWidgetKind.Canvas) return cur.Id;
+                if (cur.ParentId == 0 || !byId.TryGetValue(cur.ParentId, out var up)) return 0;
+                cur = up;
+            }
+            return 0;
+        }
+
+        private static bool IsOverlayCanvas(long canvasId, Dictionary<long, UINode> byId) =>
+            canvasId == 0 || (byId.TryGetValue(canvasId, out var c) && c.ScreenSpace);
+
+        /// <summary>Content size of a world canvas: max preferred child size (fill semantics).</summary>
+        private Size2 MeasureCanvasContent(UINode canvas, Dictionary<long, List<UINode>> children)
+        {
+            float w = 0f, h = 0f;
+            if (children.TryGetValue(canvas.Id, out var kids))
+            {
+                foreach (var k in kids)
+                {
+                    var s = PreferredSize(k, children);
+                    if (s.W > w) w = s.W;
+                    if (s.H > h) h = s.H;
+                }
+            }
+            if (w <= 0f) w = 100f;
+            if (h <= 0f) h = 100f;
+            return new Size2 { W = w, H = h };
+        }
+
+        /// <summary>Ids of a canvas subtree (stops at nested canvases: they bake separately).</summary>
+        private static HashSet<long> CollectSubtreeIds(long canvasId, Dictionary<long, List<UINode>> children)
+        {
+            var ids = new HashSet<long> { canvasId };
+            var stack = new Stack<long>();
+            stack.Push(canvasId);
+            while (stack.Count > 0)
+            {
+                long cur = stack.Pop();
+                if (!children.TryGetValue(cur, out var kids)) continue;
+                foreach (var k in kids)
+                {
+                    if (k.Kind == UIWidgetKind.Canvas) continue; // nested canvas: own bake
+                    if (ids.Add(k.Id)) stack.Push(k.Id);
+                }
+            }
+            return ids;
+        }
+
+        /// <summary>Baked world-canvas ids (world quads), for the 3D renderer.</summary>
+        public IEnumerable<long> WorldCanvasIds => _worldCanvasRects.Keys;
+
+        /// <summary>Baked texture + pixel size of a world canvas, or false when unknown.</summary>
+        public bool TryGetWorldCanvas(long id, out RenderTarget2D? texture, out int width, out int height)
+        {
+            texture = null; width = 0; height = 0;
+            if (!_worldTargets.TryGetValue(id, out var rt)) return false;
+            if (!_worldCanvasRects.TryGetValue(id, out var rect)) return false;
+            texture = rt; width = rect.Width; height = rect.Height;
+            return true;
+        }
+
+        /// <summary>
+        /// Bake every world canvas to its render target. Call from the draw phase
+        /// (valid device state), before the 3D pass samples the textures. No-op
+        /// unless a UI frame arrived since the last bake: frozen V12 keeps the
+        /// last-good textures (stateless rendering per contract).
+        /// </summary>
+        public void BakeWorldCanvases(GraphicsDevice gd)
+        {
+            if (!_worldDirty || _worldCanvasRects.Count == 0) return;
+            _worldDirty = false;
+
+            int saveW = (int)GumService.Default.CanvasWidth;
+            int saveH = (int)GumService.Default.CanvasHeight;
+
+            // Evict targets for canvases that vanished without a Reconcile stale
+            // pass (belt and braces; Reconcile normally handles it).
+            List<long>? dead = null;
+            foreach (var id in _worldTargets.Keys)
+                if (!_worldCanvasRects.ContainsKey(id)) (dead ??= new List<long>()).Add(id);
+            if (dead != null)
+                foreach (var id in dead)
+                {
+                    _worldTargets[id].Dispose();
+                    _worldTargets.Remove(id);
+                }
+
+            // Hide everything; each canvas is revealed alone for its bake.
+            foreach (var c in _controls.Values)
+                c.Visual.Visible = false;
+
+            foreach (var kv in _worldCanvasRects)
+            {
+                long canvasId = kv.Key;
+                var rect = kv.Value;
+                if (rect.Width <= 0 || rect.Height <= 0) continue;
+
+                int bw = Math.Max(8, Math.Min(4096, (int)(rect.Width * WorldBakeScale)));
+                int bh = Math.Max(8, Math.Min(4096, (int)(rect.Height * WorldBakeScale)));
+                var rt = GetOrCreateWorldTarget(canvasId, bw, bh);
+
+                foreach (var c in _controls)
+                    if (_controlCanvas.TryGetValue(c.Key, out var cid) && cid == canvasId)
+                        c.Value.Visual.Visible = true;
+
+                // Supersample: scale the subtree's bounds + font scales into bake
+                // space (hit-test rects stay in content pixels — restored after).
+                var savedFonts = ScaleSubtreeForBake(canvasId, WorldBakeScale);
+
+                GumService.Default.CanvasWidth = bw;
+                GumService.Default.CanvasHeight = bh;
+                gd.SetRenderTarget(rt);
+                gd.Viewport = new Viewport(0, 0, bw, bh);
+                gd.Clear(Color.Transparent);
+                GumService.Default.Draw();
+
+                RestoreSubtreeAfterBake(canvasId, savedFonts);
+
+                foreach (var c in _controls)
+                    if (_controlCanvas.TryGetValue(c.Key, out var cid) && cid == canvasId)
+                        c.Value.Visual.Visible = false;
+            }
+
+            gd.SetRenderTarget(null);
+            var pp = gd.PresentationParameters;
+            gd.Viewport = new Viewport(0, 0, pp.BackBufferWidth, pp.BackBufferHeight);
+            GumService.Default.CanvasWidth = saveW;
+            GumService.Default.CanvasHeight = saveH;
+
+            // Overlay state: screen-space controls visible, world hidden.
+            foreach (var c in _controls)
+            {
+                bool isWorld = _controlCanvas.TryGetValue(c.Key, out var cid)
+                    && _worldCanvasRects.ContainsKey(cid);
+                c.Value.Visual.Visible = !isWorld;
+            }
+        }
+
+        private RenderTarget2D GetOrCreateWorldTarget(long canvasId, int width, int height)
+        {
+            if (_worldTargets.TryGetValue(canvasId, out var rt))
+            {
+                if (!rt.IsDisposed && rt.Width == width && rt.Height == height) return rt;
+                if (!rt.IsDisposed) rt.Dispose();
+                _worldTargets.Remove(canvasId);
+            }
+            rt = new RenderTarget2D(_game.GraphicsDevice, width, height, false,
+                SurfaceFormat.Color, DepthFormat.None);
+            _worldTargets[canvasId] = rt;
+            return rt;
+        }
+
+        /// <summary>
+        /// Scale a world-canvas subtree's visual bounds + font scales by <paramref name="s"/>
+        /// for supersampled baking. Returns saved font scales for <see cref="RestoreSubtreeAfterBake"/>
+        /// (bounds restore from the canvas-pixel rects, which hit-testing keeps using).
+        /// </summary>
+        private Dictionary<Gum.Wireframe.GraphicalUiElement, float> ScaleSubtreeForBake(long canvasId, float s)
+        {
+            var savedFonts = new Dictionary<Gum.Wireframe.GraphicalUiElement, float>();
+            if (!_worldRects.TryGetValue(canvasId, out var rects)) return savedFonts;
+            foreach (var kv in rects)
+            {
+                if (!_controls.TryGetValue(kv.Key, out var control)) continue;
+                var v = control.Visual;
+                // Scroll-nested visuals use parent-relative bounds: the scaled
+                // parent carries them, so only their (absolute) font scales move.
+                bool isNested = _nested.TryGetValue(kv.Key, out var nest) && nest;
+                if (!isNested)
+                {
+                    v.X *= s;
+                    v.Y *= s;
+                    v.Width *= s;
+                    v.Height *= s;
+                }
+                ScaleFonts(v, savedFonts, s);
+            }
+            return savedFonts;
+        }
+
+        private static void ScaleFonts(Gum.Wireframe.GraphicalUiElement v,
+            Dictionary<Gum.Wireframe.GraphicalUiElement, float> saved, float s)
+        {
+            if (v is Gum.GueDeriving.TextRuntime tr)
+            {
+                saved[v] = tr.FontScale;
+                tr.FontScale *= s;
+            }
+            foreach (var child in v.Children)
+                ScaleFonts(child, saved, s);
+        }
+
+        private void RestoreSubtreeAfterBake(long canvasId,
+            Dictionary<Gum.Wireframe.GraphicalUiElement, float> savedFonts)
+        {
+            if (_worldRects.TryGetValue(canvasId, out var rects))
+            {
+                foreach (var kv in rects)
+                {
+                    if (!_controls.TryGetValue(kv.Key, out var control)) continue;
+                    bool isNested = _nested.TryGetValue(kv.Key, out var nest) && nest;
+                    if (!isNested)
+                        SetBounds(control, kv.Value);
+                }
+            }
+            foreach (var kv in savedFonts)
+            {
+                if (kv.Key is Gum.GueDeriving.TextRuntime tr)
+                    tr.FontScale = kv.Value;
+            }
+        }
+
+        /// <summary>
+        /// Press (click) routing for baked world canvases: hit-tests Button nodes
+        /// topmost-first in canvas pixels and invokes the node's click hook.
+        /// Sliders / text inputs are display-only on world quads for now.
+        /// </summary>
+        public bool InvokeWorldButton(long canvasId, float px, float py)
+        {
+            if (!_worldNodes.TryGetValue(canvasId, out var nodes)) return false;
+            if (!_worldRects.TryGetValue(canvasId, out var rects)) return false;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                var n = nodes[i];
+                if (n.Kind != UIWidgetKind.Button) continue;
+                if (!rects.TryGetValue(n.Id, out var r)) continue;
+                if (px >= r.X && px <= r.X + r.Width && py >= r.Y && py <= r.Y + r.Height)
+                {
+                    try { n.OnClick?.Invoke(); }
+                    catch (Exception e) { Console.WriteLine($"[GumUIRenderer] world button click failed: {e.Message}"); }
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

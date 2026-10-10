@@ -1,7 +1,11 @@
 using System;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Input;
 using V12.Core;
+using V12.Core.NetworkCable;
+using V12.Core.Networking;
+using V12.Core.Systems;
 using V12.Core.UI;
 
 namespace V12.Monogame
@@ -15,11 +19,14 @@ namespace V12.Monogame
     {
         private readonly GraphicsDeviceManager _graphics;
         private readonly Action<GameRoot> _configureServices;
+        private readonly MonogameNetworkOptions? _netOptions;
 
         private GameRoot? _root;
         private MonogameV12Renderer? _renderer;
         private GumUIRenderer? _uiRenderer;
         private MonogameInputBridge? _input;
+        private NetworkHandler? _network;
+        private RemotePlayerManager? _remotePlayers;
 
         private bool _escapeWasDown;
         private bool _tabWasDown;
@@ -27,9 +34,10 @@ namespace V12.Monogame
         private int _lastBackBufferWidth;
         private int _lastBackBufferHeight;
 
-        public V12Game(Action<GameRoot> configureServices)
+        public V12Game(Action<GameRoot> configureServices, MonogameNetworkOptions? network = null)
         {
             _configureServices = configureServices;
+            _netOptions = network;
 
             _graphics = new GraphicsDeviceManager(this)
             {
@@ -70,6 +78,10 @@ namespace V12.Monogame
         {
             base.Initialize();
 
+            // Same one-time serializer registration Nova performs in V12Runtime:
+            // without it every V12 BSON type is rejected by ObjectSerializer.
+            BsonConfig.Initialize();
+
             _root = new GameRoot();
 
             // Register the renderer before GameRoot.Initialize() — that is where the
@@ -91,6 +103,12 @@ namespace V12.Monogame
             _root.Registry.Register("IViewportInteraction",
                 new ViewportInteractionService(_root, viewportHost, viewportHost));
 
+            // Multiplayer (mirrors V12Runtime): register host or client before
+            // gamepaks run — the gamepak connect UI picks up a preconfigured
+            // client instead of making its own.
+            if (_netOptions != null)
+                SetupNetworking(_netOptions);
+
             // Host-supplied game services (e.g. the sample Bootstrap).
             // NOTE: create the fallback world BEFORE services/gamepaks run:
             // gamepak OnStart (e.g. V12 Studio's editor) selects its own world,
@@ -102,9 +120,75 @@ namespace V12.Monogame
 
             _root.Initialize();
 
+            if (_remotePlayers != null)
+                _remotePlayers.LocalWorldName = _root.SelectedWorld?.WorldName ?? "";
+
+            // Server mode starts listening immediately (client mode stays idle
+            // until the game UI triggers NetworkClient.ConnectAsync) — Nova parity.
+            if (_root.Registry.Get<NetworkHost>("NetworkHost") != null)
+                _root.StartNetworkingAsync();
+
             _input = new MonogameInputBridge(_root, _renderer);
 
+            // Nova-like: mouse captured from the start (look with mouse, WASD to
+            // move, UI via world quads). Tab or Esc toggles capture back out.
+            SetMouseCapture(true);
+
             Console.WriteLine("[V12Game] initialized (renderer registered)");
+        }
+
+        /// <summary>
+        /// Register a network host (server) or client and wire message routing
+        /// plus connect/disconnect lifecycle. Mirrors V12Runtime's wiring so the
+        /// same gamepak multiplayer UI works on both hosts.
+        /// </summary>
+        private void SetupNetworking(MonogameNetworkOptions options)
+        {
+            if (_root == null) return;
+
+            var worldSync = new WorldSyncHandler(_root);
+            _remotePlayers = new RemotePlayerManager(_root);
+            _network = new NetworkHandler(_root, worldSync, _remotePlayers);
+
+            _root.SetupNetworking(options.Port, options.ConnectHost, options.ForceServer);
+            _root.Cables.OnMessageReceived += _network.HandleNetworkMessage;
+
+            var networkClient = _root.Registry.Get<NetworkClient>("NetworkClient");
+            if (networkClient != null)
+            {
+                networkClient.OnConnected += () =>
+                {
+                    Console.WriteLine("[Network] Connected to server!");
+                    _network?.SendPlayerDataToServer();
+                };
+                networkClient.OnDisconnected += () =>
+                {
+                    Console.WriteLine("[Network] Disconnected from server");
+                    // Switch back FIRST (independent of player cleanup below):
+                    // the world must restore even if element removal throws.
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(_remotePlayers?.LocalWorldName))
+                            _root.SelectWorldByName(_remotePlayers.LocalWorldName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Network] world restore failed: {ex.Message}");
+                    }
+                    try
+                    {
+                        foreach (var rp in _root.FindElements(e => e.Name != null && e.Name.StartsWith("RemotePlayer_")).ToArray())
+                        {
+                            var world = _root.GetWorldForElement(rp);
+                            world?.RemoveElement(rp);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Network] disconnect cleanup failed: {ex.Message}");
+                    }
+                };
+            }
         }
 
         protected override void Update(GameTime gameTime)
@@ -132,6 +216,11 @@ namespace V12.Monogame
 
             _root?.V12Tick(deltaTime);
 
+            // Network timers + queued message dispatch + remote interpolation.
+            _network?.Update(deltaTime, false);
+            _network?.ProcessPendingNetworkMessages();
+            _remotePlayers?.UpdateTweens(deltaTime);
+
             // Drive Gum (pointer/keyboard) after the frame's UI has been handed over.
             _uiRenderer?.Update(gameTime);
 
@@ -155,7 +244,7 @@ namespace V12.Monogame
         }
 
         /// <summary>
-        /// Tab toggles mouse capture (hidden + confined, for looking around); Esc releases it.
+        /// Tab or Esc toggles mouse capture (hidden + confined, for looking around).
         /// Capture is deliberately NOT bound to left-click, so left-click stays free to press
         /// Gum UI controls. Movement keys work either way.
         /// </summary>
@@ -168,13 +257,13 @@ namespace V12.Monogame
             if (!_loggedCaptureHint)
             {
                 _loggedCaptureHint = true;
-                Console.WriteLine("[V12Game] Tab toggles mouse capture; Esc releases it. WASD to move.");
+                Console.WriteLine("[V12Game] Tab or Esc toggles mouse capture; WASD to move.");
             }
 
-            // Esc releases capture.
+            // Esc toggles capture (Nova-like: captured from the start).
             bool escapeDown = keys.IsKeyDown(Keys.Escape);
-            if (escapeDown && !_escapeWasDown && _renderer.LockMouse)
-                SetMouseCapture(false);
+            if (escapeDown && !_escapeWasDown)
+                SetMouseCapture(!_renderer.LockMouse);
             _escapeWasDown = escapeDown;
 
             // Tab toggles capture.
