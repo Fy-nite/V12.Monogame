@@ -19,7 +19,9 @@ namespace V12.Monogame
     {
         private readonly GraphicsDeviceManager _graphics;
         private readonly Action<GameRoot> _configureServices;
+        private readonly Action<GameRoot>? _afterInitialize;
         private readonly MonogameNetworkOptions? _netOptions;
+        private readonly bool _captureMouseOnStart;
 
         private GameRoot? _root;
         private MonogameV12Renderer? _renderer;
@@ -34,10 +36,16 @@ namespace V12.Monogame
         private int _lastBackBufferWidth;
         private int _lastBackBufferHeight;
 
-        public V12Game(Action<GameRoot> configureServices, MonogameNetworkOptions? network = null)
+        public V12Game(
+            Action<GameRoot> configureServices,
+            MonogameNetworkOptions? network = null,
+            Action<GameRoot>? afterInitialize = null,
+            bool captureMouseOnStart = false)
         {
             _configureServices = configureServices;
             _netOptions = network;
+            _afterInitialize = afterInitialize;
+            _captureMouseOnStart = captureMouseOnStart;
 
             _graphics = new GraphicsDeviceManager(this)
             {
@@ -119,6 +127,7 @@ namespace V12.Monogame
             _configureServices(_root);
 
             _root.Initialize();
+            _afterInitialize?.Invoke(_root);
 
             if (_remotePlayers != null)
                 _remotePlayers.LocalWorldName = _root.SelectedWorld?.WorldName ?? "";
@@ -130,9 +139,11 @@ namespace V12.Monogame
 
             _input = new MonogameInputBridge(_root, _renderer);
 
-            // Nova-like: mouse captured from the start (look with mouse, WASD to
-            // move, UI via world quads). Tab or Esc toggles capture back out.
-            SetMouseCapture(true);
+            // Mouse capture is opt-in: the host/game requests it via
+            // captureMouseOnStart. Otherwise the cursor stays free until Tab/Esc
+            // toggles capture (Esc releases it again).
+            if (_captureMouseOnStart)
+                SetMouseCapture(true);
 
             Console.WriteLine("[V12Game] initialized (renderer registered)");
         }

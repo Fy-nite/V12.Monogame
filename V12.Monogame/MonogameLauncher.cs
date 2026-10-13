@@ -10,9 +10,13 @@ namespace V12.Monogame
     /// </summary>
     public static class MonogameLauncher
     {
-        public static void Run(Action<GameRoot> configureServices, MonogameNetworkOptions? network = null)
+        public static void Run(
+            Action<GameRoot> configureServices,
+            MonogameNetworkOptions? network = null,
+            Action<GameRoot>? afterInitialize = null,
+            bool captureMouseOnStart = false)
         {
-            using var game = new V12Game(configureServices, network);
+            using var game = new V12Game(configureServices, network, afterInitialize, captureMouseOnStart);
             game.Run();
         }
     }
