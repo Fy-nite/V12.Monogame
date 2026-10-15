@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Microsoft.Xna.Framework;
@@ -44,6 +45,13 @@ namespace V12.Monogame
         private readonly BasicEffect _effect;
         private readonly Dictionary<IMeshRenderable, GpuMesh> _cache = new();
         private readonly Stopwatch _fpsWatch = Stopwatch.StartNew();
+
+        // ── Albedo texture cache ────────────────────────────────────────
+        // Resolved path -> GPU texture for every mesh albedo map bound at
+        // draw time (MaterialComponent.PrimaryTexture). A null value is a
+        // negative cache: the file failed to load, so don't retry each
+        // frame. Point sampling keeps block pixels crisp.
+        private readonly Dictionary<string, Texture2D?> _textures = new(StringComparer.OrdinalIgnoreCase);
 
         // ── World-canvas quads (bake-to-quad) ──────────────────────────────
         // Baked Gum textures drawn as textured quads at the canvas element's
@@ -681,7 +689,11 @@ namespace V12.Monogame
             _effect.PreferPerPixelLighting = true;
             _effect.VertexColorEnabled = true;
             _effect.TextureEnabled = false;
+            _effect.Texture = null;
             _effect.DiffuseColor = Vector3.One;
+            // Crisp texel edges for blocky albedo maps (Minecraft-style
+            // pixels); linear would smear them at oblique angles.
+            _gd.SamplerStates[0] = SamplerState.PointClamp;
 
             foreach (var draw in meshes)
             {
@@ -697,6 +709,13 @@ namespace V12.Monogame
                 ResolveDrawFlags(mesh, out bool unlit, out bool noDepth);
                 _effect.LightingEnabled = !unlit;
                 _gd.DepthStencilState = noDepth ? DepthStencilState.None : DepthStencilState.Default;
+
+                // Per-mesh albedo texture from the owner's MaterialComponent
+                // (same lookup ResolveColor uses). Untextured or unresolvable
+                // paths fall back to the flat vertex colour.
+                var texture = ResolveTexture(ResolveMaterial(mesh)?.PrimaryTexture);
+                _effect.TextureEnabled = texture != null;
+                _effect.Texture = texture;
 
                 _effect.World = V12MonogameMath.ToXna(MeshDrawWorld(draw));
                 _gd.SetVertexBuffer(gpu.VertexBuffer);
@@ -937,14 +956,24 @@ namespace V12.Monogame
                 return null;
 
             var color = ResolveColor(mesh);
+            var material = ResolveMaterial(mesh);
+            float uvScaleX = material?.Uv1ScaleX ?? 1f;
+            float uvScaleY = material?.Uv1ScaleY ?? 1f;
+            float uvOffsetX = material?.Uv1OffsetX ?? 0f;
+            float uvOffsetY = material?.Uv1OffsetY ?? 0f;
             // Identity, not length: mesh data arrays are replaced — never
             // mutated in place — so a new array is new geometry even at equal
             // lengths. A length-only key renders stale geometry forever
             // (e.g. gizmo handles resizing while dollying keep their first
-            // frame's vertices). Reference hashes are O(1).
+            // frame's vertices). Reference hashes are O(1). UV scale/offset
+            // fold in too: they change the baked UVs, not just a uniform.
             long signature = ((long)(uint)RuntimeHelpers.GetHashCode(points) << 32)
                 ^ (uint)RuntimeHelpers.GetHashCode(indices)
-                ^ ((long)color.PackedValue << 1);
+                ^ ((long)color.PackedValue << 1)
+                ^ ((long)BitConverter.DoubleToInt64Bits(uvScaleX) << 3)
+                ^ (long)BitConverter.DoubleToInt64Bits(uvScaleY)
+                ^ ((long)BitConverter.DoubleToInt64Bits(uvOffsetX) >> 5)
+                ^ ((long)BitConverter.DoubleToInt64Bits(uvOffsetY) >> 11);
 
             if (_cache.TryGetValue(mesh, out var existing))
             {
@@ -1000,6 +1029,14 @@ namespace V12.Monogame
                 vertices[i].Normal = normal;
             }
 
+            // Planar UVs per vertex, picked by its dominant normal axis and
+            // normalised over the mesh bounding box: every face of an
+            // axis-aligned box maps onto the full 0..1 texture — exactly what
+            // a Minecraft-style cube_all block wants. The material's UV
+            // scale/offset then tile/shift the result. Meshes without a
+            // texture never read these (TextureEnabled stays off for them).
+            BakePlanarUvs(vertices, uvScaleX, uvScaleY, uvOffsetX, uvOffsetY);
+
             var vertexBuffer = new VertexBuffer(_gd, VertexPositionNormalColor.VertexDeclaration, vertexCount, BufferUsage.WriteOnly);
             vertexBuffer.SetData(vertices);
 
@@ -1020,28 +1057,135 @@ namespace V12.Monogame
 
         private static Color ResolveColor(IMeshRenderable mesh)
         {
-            if (mesh is ComponentBase component && component.Owner != null)
-            {
-                var material = component.Owner.GetComponent<MaterialComponent>();
-                if (material != null)
-                    return new Color(material.R, material.G, material.B, material.A);
-            }
+            var material = ResolveMaterial(mesh);
+            if (material != null)
+                return new Color(material.R, material.G, material.B, material.A);
             return new Color(0.8f, 0.8f, 0.8f, 1f);
+        }
+
+        /// <summary>The owner element's MaterialComponent, or null (same
+        /// lookup path every material-driven decision uses).</summary>
+        private static MaterialComponent? ResolveMaterial(IMeshRenderable mesh)
+        {
+            if (mesh is ComponentBase component && component.Owner != null)
+                return component.Owner.GetComponent<MaterialComponent>();
+            return null;
+        }
+
+        /// <summary>
+        /// GPU texture for an albedo path, or null. Paths resolve through the
+        /// engine's asset resolver (v12:// URIs and pak-mount-relative paths)
+        /// first, then the raw filesystem. Cached by resolved path — a failed
+        /// load is negative-cached so it is not retried every frame.
+        /// </summary>
+        private Texture2D? ResolveTexture(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+
+            string? resolved = ResolveTexturePath(path);
+            if (resolved == null) return null;
+
+            if (_textures.TryGetValue(resolved, out var cached)) return cached;
+
+            Texture2D? texture = null;
+            try
+            {
+                using var stream = File.OpenRead(resolved);
+                texture = Texture2D.FromStream(_gd, stream);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MonogameRenderer] texture load failed '{resolved}': {ex.Message}");
+            }
+            _textures[resolved] = texture;
+            return texture;
+        }
+
+        /// <summary>Material texture path → existing absolute file path, or null.</summary>
+        private string? ResolveTexturePath(string path)
+        {
+            var resolver = _root?.Registry?.Get<IAssetResolver>();
+
+            if (path.StartsWith("v12://", StringComparison.OrdinalIgnoreCase))
+            {
+                var resolved = resolver?.Resolve(path) ?? path;
+                return File.Exists(resolved) ? resolved : null;
+            }
+
+            if (Path.IsPathRooted(path))
+                return File.Exists(path) ? path : null;
+
+            // Relative: check against every mounted pak root, then raw CWD.
+            if (resolver is V12AssetResolver mounts)
+            {
+                var relative = mounts.ResolveRelative(path);
+                if (!string.Equals(relative, path, StringComparison.Ordinal) && File.Exists(relative))
+                    return relative;
+            }
+            return File.Exists(path) ? path : null;
+        }
+
+        /// <summary>
+        /// Bakes planar UVs into <paramref name="vertices"/>: each vertex is
+        /// projected along its dominant normal axis onto the mesh bounding
+        /// box, normalised to 0..1, then scaled/offset by the material UVs.
+        /// +Y (top) faces read the texture with +Z as down, side faces keep
+        /// +Y up — the usual Minecraft block convention.
+        /// </summary>
+        private static void BakePlanarUvs(
+            VertexPositionNormalColor[] vertices,
+            float scaleX, float scaleY, float offsetX, float offsetY)
+        {
+            if (vertices.Length == 0) return;
+
+            var min = vertices[0].Position;
+            var max = vertices[0].Position;
+            for (int i = 1; i < vertices.Length; i++)
+            {
+                var p = vertices[i].Position;
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+
+            var size = max - min;
+            // A degenerate axis (flat plane mesh) projects to 0 instead of NaN.
+            float sx = size.X > 1e-6f ? 1f / size.X : 0f;
+            float sy = size.Y > 1e-6f ? 1f / size.Y : 0f;
+            float sz = size.Z > 1e-6f ? 1f / size.Z : 0f;
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var v = vertices[i];
+                var n = v.Normal;
+                float ax = Math.Abs(n.X), ay = Math.Abs(n.Y), az = Math.Abs(n.Z);
+
+                float u, w; // w = raw v before material transform
+                if (ax >= ay && ax >= az)
+                {
+                    u = (v.Position.Z - min.Z) * sz;
+                    w = (max.Y - v.Position.Y) * sy;
+                }
+                else if (ay >= az)
+                {
+                    u = (v.Position.X - min.X) * sx;
+                    w = (v.Position.Z - min.Z) * sz;
+                }
+                else
+                {
+                    u = (v.Position.X - min.X) * sx;
+                    w = (max.Y - v.Position.Y) * sy;
+                }
+
+                v.TextureCoordinate = new Vector2(u * scaleX + offsetX, w * scaleY + offsetY);
+                vertices[i] = v;
+            }
         }
 
         private static void ResolveDrawFlags(IMeshRenderable mesh, out bool unlit, out bool noDepthTest)
         {
-            unlit = false;
-            noDepthTest = false;
-            if (mesh is ComponentBase component && component.Owner != null)
-            {
-                var material = component.Owner.GetComponent<MaterialComponent>();
-                if (material != null)
-                {
-                    unlit = material.Unlit;
-                    noDepthTest = material.NoDepthTest;
-                }
-            }
+            var material = ResolveMaterial(mesh);
+            unlit = material?.Unlit ?? false;
+            noDepthTest = material?.NoDepthTest ?? false;
         }
     }
 }

@@ -31,7 +31,6 @@ namespace V12.Monogame
         private RemotePlayerManager? _remotePlayers;
 
         private bool _escapeWasDown;
-        private bool _tabWasDown;
         private bool _loggedCaptureHint;
         private int _lastBackBufferWidth;
         private int _lastBackBufferHeight;
@@ -255,7 +254,7 @@ namespace V12.Monogame
         }
 
         /// <summary>
-        /// Tab or Esc toggles mouse capture (hidden + confined, for looking around).
+        /// Esc toggles mouse capture (hidden + confined, for looking around). Tab is free for the game.
         /// Capture is deliberately NOT bound to left-click, so left-click stays free to press
         /// Gum UI controls. Movement keys work either way.
         /// </summary>
@@ -268,7 +267,7 @@ namespace V12.Monogame
             if (!_loggedCaptureHint)
             {
                 _loggedCaptureHint = true;
-                Console.WriteLine("[V12Game] Tab or Esc toggles mouse capture; WASD to move.");
+                Console.WriteLine("[V12Game] Esc toggles mouse capture; Tab opens the menu; WASD to move.");
             }
 
             // Esc toggles capture (Nova-like: captured from the start).
@@ -276,12 +275,6 @@ namespace V12.Monogame
             if (escapeDown && !_escapeWasDown)
                 SetMouseCapture(!_renderer.LockMouse);
             _escapeWasDown = escapeDown;
-
-            // Tab toggles capture.
-            bool tabDown = keys.IsKeyDown(Keys.Tab);
-            if (tabDown && !_tabWasDown)
-                SetMouseCapture(!_renderer.LockMouse);
-            _tabWasDown = tabDown;
         }
 
         private void SetMouseCapture(bool locked)

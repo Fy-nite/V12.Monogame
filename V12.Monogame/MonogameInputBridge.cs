@@ -2,6 +2,7 @@ using Microsoft.Xna.Framework.Input;
 using V12.Basic.Components;
 using V12.Core;
 using V12.Core.Input;
+using System;
 
 namespace V12.Monogame
 {
@@ -29,6 +30,9 @@ namespace V12.Monogame
         private bool _wasLocked;
         private bool _interactWasDown;
         private bool _worldUiSwallowed;
+
+        /// <summary>All keyboard keys, cached for raw per-key edge forwarding.</summary>
+        private static readonly Keys[] AllKeys = (Keys[])Enum.GetValues(typeof(Keys));
 
         public MonogameInputBridge(GameRoot root, MonogameV12Renderer renderer)
         {
@@ -85,6 +89,23 @@ namespace V12.Monogame
             SendButton("run", Keys.LeftShift, keys);
             SendButton("fly_toggle", Keys.F, keys);
 
+            // Raw keyboard: forward every key edge with its typed Key so handlers
+            // and scripts can react to any key (e.g. Tab to toggle a menu), not
+            // just the named action map above.
+            foreach (var key in AllKeys)
+            {
+                if (!Enum.TryParse<InputKey>(key.ToString(), out var mapped)) continue;
+                bool now = keys.IsKeyDown(key);
+                if (now == _previousKeys.IsKeyDown(key)) continue;
+
+                _input?.SendEvent(new InputEvent
+                {
+                    Type = now ? InputEventType.ButtonDown : InputEventType.ButtonUp,
+                    Name = key.ToString(),
+                    Key = mapped,
+                });
+            }
+
             // Interact (aim at a ButtonComponent and press): left mouse or E.
             // A left press that lands on a world-space UI button is consumed by
             // the UI (baked quad hit-test) and hidden from the game, so one
@@ -111,6 +132,28 @@ namespace V12.Monogame
                 });
                 _interactWasDown = interact;
             }
+
+            // Raw mouse button edges for scripts (mine/place). Sent
+            // separately from the named "interact" action so games
+            // can bind left/right click to their own behavior.
+            bool rightDown = mouse.RightButton == ButtonState.Pressed;
+            if (leftDown && _previousMouse.LeftButton == ButtonState.Released)
+                _input?.SendEvent(new InputEvent { Type = InputEventType.ButtonDown, Name = "mouse_left" });
+            else if (!leftDown && _previousMouse.LeftButton == ButtonState.Pressed)
+                _input?.SendEvent(new InputEvent { Type = InputEventType.ButtonUp, Name = "mouse_left" });
+
+            if (rightDown && _previousMouse.RightButton == ButtonState.Released)
+                _input?.SendEvent(new InputEvent { Type = InputEventType.ButtonDown, Name = "mouse_right" });
+            else if (!rightDown && _previousMouse.RightButton == ButtonState.Pressed)
+                _input?.SendEvent(new InputEvent { Type = InputEventType.ButtonUp, Name = "mouse_right" });
+
+            // Mouse wheel for scripts (hotbar slot selection): forward the
+            // per-frame scroll delta as a named axis. MonoGame accumulates
+            // 120 units per detent on Windows; the sign is what games use
+            // (positive = scrolled up = previous slot).
+            int wheelDelta = mouse.ScrollWheelValue - _previousMouse.ScrollWheelValue;
+            if (wheelDelta != 0)
+                _input?.SendEvent(new InputEvent { Type = InputEventType.Axis, Name = "mouse_wheel", Value = wheelDelta });
 
             SendMouseLook(mouse);
 
@@ -176,7 +219,25 @@ namespace V12.Monogame
             }
 
             if (deltaX != 0 || deltaY != 0)
+            {
+                // Forward raw mouse deltas through the input service so
+                // scripts (and any handler without a PlayerComponent) can
+                // drive first-person look themselves. Sent only when the
+                // mouse actually moved, as per-frame deltas.
+                _input?.SendEvent(new InputEvent
+                {
+                    Type = InputEventType.Axis,
+                    Name = "mouse_dx",
+                    Value = deltaX,
+                });
+                _input?.SendEvent(new InputEvent
+                {
+                    Type = InputEventType.Axis,
+                    Name = "mouse_dy",
+                    Value = deltaY,
+                });
                 _player?.AddMouseDelta(deltaX, deltaY);
+            }
         }
     }
 }

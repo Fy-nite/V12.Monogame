@@ -992,10 +992,18 @@ namespace V12.Monogame
 
             if (fill)
             {
-                // Canvas children stretch to the whole canvas (Root expands to fill).
+                // Canvas children stretch to the whole canvas (Root expands to fill),
+                // except anchored ones (e.g. a centred menu), which keep their content
+                // size so Gum's anchor positions them instead of stretching them.
                 foreach (var k in kids)
                 {
                     _nested[k.Id] = false;
+                    if (TryGetAnchor(k.Anchor, out _))
+                    {
+                        var pref = PreferredSize(k, children);
+                        Arrange(k, new Rectangle(rect.X, rect.Y, (int)Math.Round(pref.W), (int)Math.Round(pref.H)), children, recordViewports);
+                        continue;
+                    }
                     Arrange(k, rect, children, recordViewports);
                 }
                 return;
