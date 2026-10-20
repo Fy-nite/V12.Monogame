@@ -101,15 +101,6 @@ namespace V12.Monogame
             _uiRenderer = new GumUIRenderer(this, _root);
             _root.Registry.Register("IUIRenderer", _uiRenderer);
 
-            // Editor viewport interaction (orbit camera) — registered before
-            // gamepaks run so the editor resolves it during OnStart (the nova
-            // host provides the same interface; without it the log warns and
-            // viewport input stays disabled). Ticks as an IGameService; the
-            // logic lives in V12 core, this host only supplies the adapters.
-            var viewportHost = new MonogameViewportHost(this, _uiRenderer, _renderer);
-            _root.Registry.Register("IViewportInteraction",
-                new ViewportInteractionService(_root, viewportHost, viewportHost));
-
             // Multiplayer (mirrors V12Runtime): register host or client before
             // gamepaks run — the gamepak connect UI picks up a preconfigured
             // client instead of making its own.

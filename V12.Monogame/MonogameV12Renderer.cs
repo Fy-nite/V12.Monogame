@@ -388,50 +388,6 @@ namespace V12.Monogame
 
         public void ApplySnapshot(FrameSnapshot snapshot) => _snapshot = snapshot;
 
-        // ── Editor primitives ────────────────────────────────────────────────
-        // The renderer only exposes data and device access. Picking, the orbit
-        // camera and the gizmo live in V12 core (ViewportInteractionService),
-        // exactly as nova keeps that logic in WorldCanvasSystem rather than
-        // Renderer; MonogameViewportHost adapts these members to it.
-
-        /// <summary>Camera matrices used to render <paramref name="viewportId"/>
-        /// (same source of truth as drawing, so pick rays line up with pixels).</summary>
-        public bool TryGetViewportCamera(long viewportId, out Matrix view, out Matrix proj)
-        {
-            view = Matrix.Identity;
-            proj = Matrix.Identity;
-            var gumUi = _root.Registry.Get<GumUIRenderer>();
-            if (gumUi == null || !gumUi.TryGetViewportRect(viewportId, out var rect, out _)) return false;
-            if (rect.Width <= 0 || rect.Height <= 0) return false;
-            ResolveCamera((float)rect.Width / rect.Height, out view, out proj);
-            return true;
-        }
-
-        /// <summary>Fill <paramref name="into"/> with the meshes drawn in
-        /// <paramref name="viewportId"/> this frame (cleared first).</summary>
-        public void CollectPickMeshes(long viewportId, List<ViewportPickMesh> into)
-        {
-            into.Clear();
-            var packet = _packet;
-            if (packet == null) return;
-            for (int i = 0; i < packet.Meshes.Count; i++)
-            {
-                var draw = packet.Meshes[i];
-                if (draw.ViewportId != viewportId) continue;
-                var mesh = draw.Mesh;
-                if (mesh == null) continue;
-                var points = mesh.MeshPoints;
-                var indices = mesh.Indices;
-                if (points == null || indices == null || points.Length < 9 || indices.Length < 3) continue;
-                into.Add(new ViewportPickMesh(
-                    world: MeshDrawWorld(draw),
-                    points: mesh.MeshPoints,
-                    indices: mesh.Indices,
-                    owner: (mesh as ComponentBase)?.Owner));
-
-            }
-        }
-
         // ── Drawing ──────────────────────────────────────────────────────────
 
         public void DrawFrame()
@@ -898,7 +854,7 @@ namespace V12.Monogame
                     if (rs.NodeType != SnapshotNodeType.Camera || !rs.IsCurrentCamera) continue;
 
                     _lastCameraName = string.IsNullOrEmpty(rs.Name) ? "(snapshot)" : rs.Name;
-                    BuildViewProjection(V12MonogameMath.ToXna(rs.Transform), rs.Fov, rs.NearClip, rs.FarClip, aspect, out view, out projection);
+                    BuildViewProjection(V12MonogameMath.ToXna(rs.Transform), rs.Fov, rs.NearClip, rs.FarClip, rs.Projection, rs.OrthoSize, aspect, out view, out projection);
                     return;
                 }
             }
@@ -925,11 +881,12 @@ namespace V12.Monogame
             _lastCameraName = cameraElement.Name ?? "(unnamed)";
             BuildViewProjection(
                 V12MonogameMath.ToXna(cameraElement.WorldTransform),
-                camera.FieldOfView, camera.NearClip, camera.FarClip, aspect,
+                camera.FieldOfView, camera.NearClip, camera.FarClip,
+                camera.Projection, camera.OrthoSize, aspect,
                 out view, out projection);
         }
 
-        private static void BuildViewProjection(Matrix world, float fovDegrees, float near, float far, float aspect, out Matrix view, out Matrix projection)
+        private static void BuildViewProjection(Matrix world, float fovDegrees, float near, float far, CameraProjection projectionMode, float orthoSize, float aspect, out Matrix view, out Matrix projection)
         {
             var position = new Vector3(world.M41, world.M42, world.M43);
             var forward = new Vector3(-world.M31, -world.M32, -world.M33);
@@ -941,11 +898,25 @@ namespace V12.Monogame
             up.Normalize();
 
             view = Matrix.CreateLookAt(position, position + forward, up);
-            projection = Matrix.CreatePerspectiveFieldOfView(
-                MathHelper.ToRadians(fovDegrees <= 0f ? 75f : fovDegrees),
-                aspect,
-                near <= 0f ? 0.05f : near,
-                far <= near ? near + 1000f : far);
+            if (projectionMode == CameraProjection.Orthographic)
+            {
+                float halfSize = orthoSize > 0f ? orthoSize : 5f;
+                float halfHeight = halfSize;
+                float halfWidth = halfHeight * aspect;
+                projection = Matrix.CreateOrthographic(
+                    halfWidth * 2f,
+                    halfHeight * 2f,
+                    near <= 0f ? 0.05f : near,
+                    far <= near ? near + 1000f : far);
+            }
+            else
+            {
+                projection = Matrix.CreatePerspectiveFieldOfView(
+                    MathHelper.ToRadians(fovDegrees <= 0f ? 75f : fovDegrees),
+                    aspect,
+                    near <= 0f ? 0.05f : near,
+                    far <= near ? near + 1000f : far);
+            }
         }
 
         private GpuMesh? GetOrBuildGpuMesh(IMeshRenderable mesh)
