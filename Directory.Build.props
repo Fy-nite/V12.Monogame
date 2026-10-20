@@ -1,0 +1,13 @@
+<Project>
+
+  <!--
+    Path to V12.Basic, the library that owns the V12 engine and the shared
+    gameplay systems. Only a DEFAULT: override it
+    (e.g. -p:V12BasicProject=..\V12.Basic\V12.Basic.csproj) to build against a
+    different checkout or a versioned copy.
+  -->
+  <PropertyGroup>
+    <V12BasicProject Condition="'$(V12BasicProject)' == ''">$(MSBuildThisFileDirectory)libs/V12.Basic/V12.Basic.csproj</V12BasicProject>
+  </PropertyGroup>
+
+</Project>

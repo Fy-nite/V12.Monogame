@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\libs\V12.Basic\V12.Basic.csproj" />
+    <ProjectReference Include="$(V12BasicProject)" />
   </ItemGroup>
 
 </Project>
