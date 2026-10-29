@@ -14,6 +14,7 @@ using V12.Core.Interfaces;
 using V12.Core.Interfaces.Renderer;
 using V12.Core.Rendering;
 using V12.Core.UI;
+using V12.Core.UI.Paper;
 
 namespace V12.Monogame
 {
@@ -53,10 +54,9 @@ namespace V12.Monogame
         // frame. Point sampling keeps block pixels crisp.
         private readonly Dictionary<string, Texture2D?> _textures = new(StringComparer.OrdinalIgnoreCase);
 
-        // ── World-canvas quads (bake-to-quad) ──────────────────────────────
-        // Baked Gum textures drawn as textured quads at the canvas element's
-        // mirrored world transform. Quad width is fixed (Nova default); height
-        // follows the baked texture aspect so content never distorts.
+        // ── World-space canvases ───────────────────────────────────────────
+        // Baked Paper frames drawn as textured quads at the canvas element's
+        // world transform. Width is fixed; height follows the texture aspect.
         private const float WorldCanvasWidthMetres = 2f;
         private readonly BasicEffect _quadEffect;
         private readonly Dictionary<long, (VertexBuffer vb, float w, float h)> _quadCache = new();
@@ -390,47 +390,48 @@ namespace V12.Monogame
 
         // ── Drawing ──────────────────────────────────────────────────────────
 
-        public void DrawFrame()
+        public void DrawFrame(
+            PaperFrame? uiFrame = null,
+            IReadOnlyDictionary<long, PaperWorldCanvasSystem.Surface>? worldCanvases = null)
         {
             UpdateFps();
-
-            var gumUi = _root.Registry.Get<GumUIRenderer>();
-
-            // Bake world canvases first: the 3D passes below sample the textures.
-            // No-op unless a UI frame arrived (frozen V12 keeps last-good).
-            gumUi?.BakeWorldCanvases(_gd);
 
             // Baked-in lighting rig (ambient + sun slots) for the mesh effect.
             ApplyEnvironmentAndLights();
 
             var packet = _packet;
-            if (packet == null || packet.Meshes.Count == 0) return;
-
             var groups = new Dictionary<long, List<MeshDraw>>();
-            foreach (var draw in packet.Meshes)
+            if (packet != null)
             {
-                if (!groups.TryGetValue(draw.ViewportId, out var list))
-                    groups[draw.ViewportId] = list = new List<MeshDraw>();
-                list.Add(draw);
+                foreach (var draw in packet.Meshes)
+                {
+                    if (!groups.TryGetValue(draw.ViewportId, out var list))
+                        groups[draw.ViewportId] = list = new List<MeshDraw>();
+                    list.Add(draw);
+                }
             }
 
             // Pass 1: viewport groups — render each into its own RenderTarget2D sized
-            // to the viewport panel Gum laid out. Gum picks the texture up via
-            // <see cref="GetViewportTexture"/>.
+            // to the viewport panel Paper laid out. The UI packet carries the rect and
+            // receives the finished texture back for the UI draw pass.
             foreach (var group in groups)
             {
                 if (group.Key == 0) continue;
-                if (gumUi == null || !gumUi.TryGetViewportRect(group.Key, out var vpRect, out var vpColor))
-                    continue;
-                if (vpRect.Width <= 0 || vpRect.Height <= 0) continue;
+                var viewport = FindViewport(uiFrame, group.Key);
+                if (viewport == null) continue;
 
-                var rt = GetOrCreateViewportTarget(group.Key, vpRect.Width, vpRect.Height);
+                int vpWidth = (int)MathF.Round(viewport.Rect.Z);
+                int vpHeight = (int)MathF.Round(viewport.Rect.W);
+                if (vpWidth <= 0 || vpHeight <= 0) continue;
+
+                var rt = GetOrCreateViewportTarget(group.Key, vpWidth, vpHeight);
+                viewport.Texture = rt;
                 _gd.SetRenderTarget(rt);
                 _gd.Viewport = new Viewport(0, 0, rt.Width, rt.Height);
-                _gd.Clear(vpColor);
+                _gd.Clear(Unpack(viewport.Color));
                 _gd.DepthStencilState = DepthStencilState.Default;
-                // Explicit: Gum's SpriteBatch leaves CullCounterClockwise behind,
-                // which culls the wrong faces for V12 meshes (inside-out look).
+                // Explicit: the previous UI/2D pass can leave a culling state behind
+                // that flips V12's faces (inside-out look).
                 _gd.RasterizerState = RasterizerState.CullNone;
                 _gd.BlendState = BlendState.Opaque;
 
@@ -438,7 +439,7 @@ namespace V12.Monogame
                 ResolveCamera(aspect, out var vpView, out var vpProj);
                 if (_env.Skybox) DrawSky(vpView, vpProj);
                 DrawMeshes(group.Value, vpView, vpProj);
-                DrawWorldQuads(vpView, vpProj, gumUi);
+                DrawWorldQuads(vpView, vpProj, worldCanvases);
 
                 _gd.SetRenderTarget(null);
                 _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
@@ -459,102 +460,16 @@ namespace V12.Monogame
             if (!_loggedFirstFrame)
             {
                 _loggedFirstFrame = true;
-                Console.WriteLine($"[MonogameRenderer] first frame: {packet.Meshes.Count} mesh(es), camera '{_lastCameraName}'");
+                Console.WriteLine($"[MonogameRenderer] first frame: {packet?.Meshes.Count ?? 0} mesh(es), camera '{_lastCameraName}'");
             }
             if (groups.TryGetValue(0, out var mainMeshes))
                 DrawMeshes(mainMeshes, view, projection);
-            // World-space UI quads draw last: transparent, over the opaque scene.
-            DrawWorldQuads(view, projection, gumUi);
+            DrawWorldQuads(view, projection, worldCanvases);
             // Overlay intentionally not invoked on the main pass: the editor
             // gizmo belongs in the viewport RTs where the scene actually shows.
         }
 
-        /// <summary>
-        /// Draw every baked world canvas as a textured quad at its canvas
-        /// element's mirrored world transform. Canvases missing from the mirror
-        /// are skipped (degrade, don't crash).
-        /// </summary>
-        private void DrawWorldQuads(Matrix view, Matrix projection, GumUIRenderer? gumUi)
-        {
-            if (gumUi == null) return;
-
-            bool any = false;
-            foreach (var _ in gumUi.WorldCanvasIds) { any = true; break; }
-            if (!any) return;
-
-            EvictQuadCache(gumUi);
-
-            _quadEffect.View = view;
-            _quadEffect.Projection = projection;
-            _gd.BlendState = BlendState.AlphaBlend;
-            _gd.DepthStencilState = DepthStencilState.Default;
-            _gd.RasterizerState = RasterizerState.CullNone;
-            _gd.SamplerStates[0] = SamplerState.LinearClamp;
-
-            foreach (long canvasId in gumUi.WorldCanvasIds)
-            {
-                if (!gumUi.TryGetWorldCanvas(canvasId, out var tex, out int pw, out int ph)) continue;
-                if (tex == null || tex.IsDisposed || pw <= 0 || ph <= 0) continue;
-                if (!_mirrorWorlds.TryGetValue(canvasId, out var world)) continue;
-
-                float w = WorldCanvasWidthMetres;
-                float h = WorldCanvasWidthMetres * ph / pw;
-
-                if (!_quadCache.TryGetValue(canvasId, out var quad)
-                    || quad.vb.IsDisposed
-                    || Math.Abs(quad.w - w) > 1e-4f
-                    || Math.Abs(quad.h - h) > 1e-4f)
-                {
-                    if (_quadCache.TryGetValue(canvasId, out var old) && !old.vb.IsDisposed)
-                        old.vb.Dispose();
-                    _quadCache[canvasId] = quad = (BuildQuadBuffer(w, h), w, h);
-                }
-
-                _quadEffect.World = V12MonogameMath.ToXna(world);
-                _quadEffect.Texture = tex;
-                _gd.SetVertexBuffer(quad.vb);
-
-                foreach (var pass in _quadEffect.CurrentTechnique.Passes)
-                {
-                    pass.Apply();
-                    _gd.DrawPrimitives(PrimitiveType.TriangleStrip, 0, 2);
-                }
-            }
-            _gd.SetVertexBuffer(null);
-        }
-
-        private VertexBuffer BuildQuadBuffer(float w, float h)
-        {
-            // V12 space: X right, Y up, facing +Z. UV origin top-left (RT row 0).
-            float hw = w / 2f, hh = h / 2f;
-            var verts = new[]
-            {
-                new VertexPositionTexture(new Vector3(-hw, hh, 0f), new Vector2(0f, 0f)),
-                new VertexPositionTexture(new Vector3(hw, hh, 0f), new Vector2(1f, 0f)),
-                new VertexPositionTexture(new Vector3(-hw, -hh, 0f), new Vector2(0f, 1f)),
-                new VertexPositionTexture(new Vector3(hw, -hh, 0f), new Vector2(1f, 1f)),
-            };
-            var vb = new VertexBuffer(_gd, VertexPositionTexture.VertexDeclaration, 4, BufferUsage.WriteOnly);
-            vb.SetData(verts);
-            return vb;
-        }
-
-        private void EvictQuadCache(GumUIRenderer gumUi)
-        {
-            var live = new HashSet<long>(gumUi.WorldCanvasIds);
-            List<long>? dead = null;
-            foreach (var id in _quadCache.Keys)
-                if (!live.Contains(id)) (dead ??= new List<long>()).Add(id);
-            if (dead == null) return;
-            foreach (var id in dead)
-            {
-                if (_quadCache.TryGetValue(id, out var q) && !q.vb.IsDisposed)
-                    q.vb.Dispose();
-                _quadCache.Remove(id);
-            }
-        }
-
-        /// <summary>Pick ray through a main-screen pixel (backbuffer space).</summary>
+        /// <summary>Ray through a main-screen pixel (backbuffer space).</summary>
         public bool TryGetMainRay(int screenX, int screenY, out Vector3 origin, out Vector3 direction)
         {
             origin = default;
@@ -575,58 +490,174 @@ namespace V12.Monogame
             return true;
         }
 
-        /// <summary>
-        /// Route a main-screen click to the topmost world-canvas Button under it.
-        /// Returns true when a button consumed the click (caller should swallow it).
-        /// </summary>
-        public bool TryHandleWorldClick(int screenX, int screenY)
+        /// <summary>Topmost world canvas under a screen pixel, with canvas-local pixel coordinates.</summary>
+        public bool TryGetWorldCanvasAt(
+            int screenX, int screenY,
+            IReadOnlyDictionary<long, PaperWorldCanvasSystem.Surface>? canvases,
+            out long canvasId, out float pixelX, out float pixelY)
         {
-            var gumUi = _root.Registry.Get<GumUIRenderer>();
-            if (gumUi == null) return false;
+            canvasId = 0;
+            pixelX = 0f;
+            pixelY = 0f;
+            if (canvases == null || canvases.Count == 0) return false;
             if (!TryGetMainRay(screenX, screenY, out var origin, out var dir)) return false;
 
-            long bestCanvas = 0;
             float bestT = float.MaxValue;
-            float bestPx = 0f, bestPy = 0f;
-
-            foreach (long canvasId in gumUi.WorldCanvasIds)
+            foreach (var surface in canvases.Values)
             {
-                if (!gumUi.TryGetWorldCanvas(canvasId, out _, out int pw, out int ph)) continue;
-                if (pw <= 0 || ph <= 0) continue;
-                if (!_mirrorWorlds.TryGetValue(canvasId, out var world)) continue;
+                if (!_mirrorWorlds.TryGetValue(surface.Id, out var world)) continue;
+                var quad = GetWorldCanvasQuad(world, surface.PixelWidth, surface.PixelHeight);
 
-                var xw = V12MonogameMath.ToXna(world);
-                var t0 = new Vector3(xw.M41, xw.M42, xw.M43);
-                var ax = new Vector3(xw.M11, xw.M21, xw.M31);
-                var ay = new Vector3(xw.M12, xw.M22, xw.M32);
-                if (ax.LengthSquared() < 1e-12f || ay.LengthSquared() < 1e-12f) continue;
-                ax.Normalize();
-                ay.Normalize();
-                var n = Vector3.Cross(ax, ay);
-                if (n.LengthSquared() < 1e-12f) continue;
-                n.Normalize();
+                var normal = Vector3.Cross(quad.AxisX, quad.AxisY);
+                if (normal.LengthSquared() < 1e-12f) continue;
+                normal.Normalize();
 
-                float denom = Vector3.Dot(dir, n);
+                float denom = Vector3.Dot(dir, normal);
                 if (Math.Abs(denom) < 1e-9f) continue;
-                float t = Vector3.Dot(n, t0 - origin) / denom;
+                float t = Vector3.Dot(normal, quad.Center - origin) / denom;
                 if (t <= 0f || t >= bestT) continue;
 
                 var hit = origin + dir * t;
-                float w = WorldCanvasWidthMetres;
-                float h = WorldCanvasWidthMetres * ph / pw;
-                float lx = Vector3.Dot(hit - t0, ax);
-                float ly = Vector3.Dot(hit - t0, ay);
-                if (Math.Abs(lx) > w / 2f || Math.Abs(ly) > h / 2f) continue;
+                float lx = Vector3.Dot(hit - quad.Center, quad.AxisX);
+                float ly = Vector3.Dot(hit - quad.Center, quad.AxisY);
+                if (Math.Abs(lx) > quad.Width / 2f || Math.Abs(ly) > quad.Height / 2f) continue;
 
-                bestCanvas = canvasId;
                 bestT = t;
-                bestPx = (lx / w + 0.5f) * pw;
-                bestPy = (0.5f - ly / h) * ph;
+                canvasId = surface.Id;
+                pixelX = (lx / quad.Width + 0.5f) * surface.PixelWidth;
+                pixelY = (0.5f - ly / quad.Height) * surface.PixelHeight;
             }
 
-            if (bestCanvas == 0) return false;
-            return gumUi.InvokeWorldButton(bestCanvas, bestPx, bestPy);
+            return canvasId != 0;
         }
+
+        private void DrawWorldQuads(
+            Matrix view, Matrix projection,
+            IReadOnlyDictionary<long, PaperWorldCanvasSystem.Surface>? canvases)
+        {
+            if (canvases == null || canvases.Count == 0) return;
+
+            EvictQuadCache(canvases);
+
+            _quadEffect.View = view;
+            _quadEffect.Projection = projection;
+            _gd.BlendState = BlendState.AlphaBlend;
+            _gd.DepthStencilState = DepthStencilState.Default;
+            _gd.RasterizerState = RasterizerState.CullNone;
+            _gd.SamplerStates[0] = SamplerState.LinearClamp;
+
+            foreach (var surface in canvases.Values)
+            {
+                if (surface.Texture is not RenderTarget2D tex || tex.IsDisposed) continue;
+                if (!_mirrorWorlds.TryGetValue(surface.Id, out var world)) continue;
+                var placement = GetWorldCanvasQuad(world, surface.PixelWidth, surface.PixelHeight);
+
+                if (!_quadCache.TryGetValue(surface.Id, out var quad)
+                    || quad.vb.IsDisposed
+                    || Math.Abs(quad.w - placement.Width) > 1e-4f
+                    || Math.Abs(quad.h - placement.Height) > 1e-4f)
+                {
+                    if (_quadCache.TryGetValue(surface.Id, out var old) && !old.vb.IsDisposed)
+                        old.vb.Dispose();
+                    _quadCache[surface.Id] = quad = (BuildQuadBuffer(placement.Width, placement.Height), placement.Width, placement.Height);
+                }
+
+                _quadEffect.World = placement.World;
+                _quadEffect.Texture = tex;
+                _gd.SetVertexBuffer(quad.vb);
+
+                foreach (var pass in _quadEffect.CurrentTechnique.Passes)
+                {
+                    pass.Apply();
+                    _gd.DrawPrimitives(PrimitiveType.TriangleStrip, 0, 2);
+                }
+            }
+            _gd.SetVertexBuffer(null);
+        }
+
+        private static (Matrix World, Vector3 Center, Vector3 AxisX, Vector3 AxisY, float Width, float Height)
+            GetWorldCanvasQuad(System.Numerics.Matrix4x4 world, int pixelWidth, int pixelHeight)
+        {
+            var matrix = V12MonogameMath.ToXna(world);
+            var center = new Vector3(matrix.M41, matrix.M42, matrix.M43);
+            var axisX = new Vector3(matrix.M11, matrix.M21, matrix.M31);
+            var axisY = new Vector3(matrix.M12, matrix.M22, matrix.M32);
+            float scaleX = axisX.Length();
+            float scaleY = axisY.Length();
+
+            bool hasScale = (scaleX > 0.01f && Math.Abs(scaleX - 1f) > 1e-3f) ||
+                            (scaleY > 0.01f && Math.Abs(scaleY - 1f) > 1e-3f);
+
+            if (scaleX > 0.01f)
+            {
+                matrix.M11 /= scaleX; matrix.M21 /= scaleX; matrix.M31 /= scaleX;
+                axisX = new Vector3(matrix.M11, matrix.M21, matrix.M31);
+            }
+            else
+            {
+                axisX = Vector3.UnitX;
+            }
+
+            if (scaleY > 0.01f)
+            {
+                matrix.M12 /= scaleY; matrix.M22 /= scaleY; matrix.M32 /= scaleY;
+                axisY = new Vector3(matrix.M12, matrix.M22, matrix.M32);
+            }
+            else
+            {
+                axisY = Vector3.UnitY;
+            }
+
+            float width = hasScale ? Math.Max(0.01f, scaleX) : WorldCanvasWidthMetres;
+            float height = hasScale
+                ? Math.Max(0.01f, scaleY)
+                : WorldCanvasWidthMetres * pixelHeight / Math.Max(1, pixelWidth);
+
+            return (matrix, center, axisX, axisY, width, height);
+        }
+
+        private VertexBuffer BuildQuadBuffer(float w, float h)
+        {
+            float hw = w / 2f, hh = h / 2f;
+            var verts = new[]
+            {
+                new VertexPositionTexture(new Vector3(-hw, hh, 0f), new Vector2(0f, 0f)),
+                new VertexPositionTexture(new Vector3(hw, hh, 0f), new Vector2(1f, 0f)),
+                new VertexPositionTexture(new Vector3(-hw, -hh, 0f), new Vector2(0f, 1f)),
+                new VertexPositionTexture(new Vector3(hw, -hh, 0f), new Vector2(1f, 1f)),
+            };
+            var vb = new VertexBuffer(_gd, VertexPositionTexture.VertexDeclaration, 4, BufferUsage.WriteOnly);
+            vb.SetData(verts);
+            return vb;
+        }
+
+        private void EvictQuadCache(IReadOnlyDictionary<long, PaperWorldCanvasSystem.Surface> canvases)
+        {
+            List<long>? dead = null;
+            foreach (var id in _quadCache.Keys)
+                if (!canvases.ContainsKey(id)) (dead ??= new List<long>()).Add(id);
+            if (dead == null) return;
+            foreach (var id in dead)
+            {
+                if (_quadCache.TryGetValue(id, out var quad) && !quad.vb.IsDisposed)
+                    quad.vb.Dispose();
+                _quadCache.Remove(id);
+            }
+        }
+
+        private static PaperViewportInfo? FindViewport(PaperFrame? frame, long id)
+        {
+            if (frame == null) return null;
+            for (int i = 0; i < frame.Viewports.Count; i++)
+                if (frame.Viewports[i].Id == id) return frame.Viewports[i];
+            return null;
+        }
+
+        private static Color Unpack(uint rgba) => new(
+            (byte)(rgba & 0xFF),
+            (byte)((rgba >> 8) & 0xFF),
+            (byte)((rgba >> 16) & 0xFF),
+            (byte)((rgba >> 24) & 0xFF));
 
         private void DrawMeshes(IEnumerable<MeshDraw> meshes, Matrix view, Matrix projection)
         {

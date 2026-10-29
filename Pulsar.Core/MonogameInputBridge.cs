@@ -29,7 +29,10 @@ namespace V12.Monogame
         private bool _mouseInitialized;
         private bool _wasLocked;
         private bool _interactWasDown;
-        private bool _worldUiSwallowed;
+
+        /// <summary>Host hook: true while the UI owns the pointer, so a click does not
+        /// also fire the game's interact action.</summary>
+        public Func<bool>? UiWantsPointer { get; set; }
 
         /// <summary>All keyboard keys, cached for raw per-key edge forwarding.</summary>
         private static readonly Keys[] AllKeys = (Keys[])Enum.GetValues(typeof(Keys));
@@ -57,7 +60,6 @@ namespace V12.Monogame
                 // doesn't produce a one-frame jump (from a stale cursor / held key).
                 _mouseInitialized = false;
                 _interactWasDown = false;
-                _worldUiSwallowed = false;
                 _previousKeys = keys;
                 _previousMouse = mouse;
                 return;
@@ -107,22 +109,11 @@ namespace V12.Monogame
             }
 
             // Interact (aim at a ButtonComponent and press): left mouse or E.
-            // A left press that lands on a world-space UI button is consumed by
-            // the UI (baked quad hit-test) and hidden from the game, so one
-            // click never both presses UI and fires the interact action.
-            // Locked or not, the aim ray decides: pointing at a button clicks
-            // it (Nova-style), anything else falls through to the game.
+            // Paper owns the pointer while it is over (or dragging) UI, so the
+            // same click does not also fire the game's interact action.
             bool leftDown = mouse.LeftButton == ButtonState.Pressed;
-            if (leftDown && _previousMouse.LeftButton == ButtonState.Released)
-            {
-                if (windowActive && _renderer.TryHandleWorldClick(mouse.X, mouse.Y))
-                    _worldUiSwallowed = true;
-            }
-            else if (!leftDown && _previousMouse.LeftButton == ButtonState.Pressed)
-            {
-                _worldUiSwallowed = false;
-            }
-            bool interact = keys.IsKeyDown(Keys.E) || (leftDown && !_worldUiSwallowed);
+            bool uiOwnsPointer = windowActive && (UiWantsPointer?.Invoke() ?? false);
+            bool interact = keys.IsKeyDown(Keys.E) || (leftDown && !uiOwnsPointer);
             if (interact != _interactWasDown)
             {
                 _input?.SendEvent(new InputEvent

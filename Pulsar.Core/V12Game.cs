@@ -7,6 +7,7 @@ using V12.Core.NetworkCable;
 using V12.Core.Networking;
 using V12.Core.Systems;
 using V12.Core.UI;
+using V12.Monogame.Paper;
 
 namespace V12.Monogame
 {
@@ -25,7 +26,7 @@ namespace V12.Monogame
 
         private GameRoot? _root;
         private MonogameV12Renderer? _renderer;
-        private GumUIRenderer? _uiRenderer;
+        private MonogamePaperUIRenderer? _uiRenderer;
         private MonogameInputBridge? _input;
         private NetworkHandler? _network;
         private RemotePlayerManager? _remotePlayers;
@@ -34,6 +35,8 @@ namespace V12.Monogame
         private bool _loggedCaptureHint;
         private int _lastBackBufferWidth;
         private int _lastBackBufferHeight;
+        private long _hoveredWorldCanvasId;
+        private bool _worldUiHovered;
 
         public V12Game(
             Action<GameRoot> configureServices,
@@ -61,7 +64,7 @@ namespace V12.Monogame
 
         private bool _resizing;
 
-        /// <summary>Keep the backbuffer (and therefore the Gum canvas) in sync with the window.</summary>
+        /// <summary>Keep the backbuffer (and therefore the Paper canvas) in sync with the window.</summary>
         private void OnClientSizeChanged(object? sender, EventArgs e)
         {
             if (_resizing) return;
@@ -88,6 +91,7 @@ namespace V12.Monogame
             // Same one-time serializer registration Nova performs in V12Runtime:
             // without it every V12 BSON type is rejected by ObjectSerializer.
             BsonConfig.Initialize();
+            if (!GameRoot.LoggingConfigured) GameRoot.ConfigureLogging();
 
             _root = new GameRoot();
 
@@ -96,10 +100,17 @@ namespace V12.Monogame
             _renderer = new MonogameV12Renderer(GraphicsDevice, _root);
             _root.Registry.Register("IRenderer", _renderer);
 
-            // UI renderer (Gum) — registered before Initialize so GameRoot resolves it and
-            // hands it the captured UIFrame each dirty frame.
-            _uiRenderer = new GumUIRenderer(this, _root);
-            _root.Registry.Register("IUIRenderer", _uiRenderer);
+            // Paper/Origami UI renderer — registered before Initialize so GameRoot
+            // resolves it and hands it the captured UIFrame each dirty frame.
+            var pp = GraphicsDevice.PresentationParameters;
+            _uiRenderer = new MonogamePaperUIRenderer(
+                GraphicsDevice,
+                Math.Max(1, pp.BackBufferWidth),
+                Math.Max(1, pp.BackBufferHeight));
+            // GameRoot's constructor installs a headless Paper renderer by default;
+            // this host supplies the MonoGame canvas backend instead.
+            _root.Registry.RegisterOrReplace("IUIRenderer", _uiRenderer);
+            Window.TextInput += OnTextInput;
 
             // Multiplayer (mirrors V12Runtime): register host or client before
             // gamepaks run — the gamepak connect UI picks up a preconfigured
@@ -127,7 +138,10 @@ namespace V12.Monogame
             if (_root.Registry.Get<NetworkHost>("NetworkHost") != null)
                 _root.StartNetworkingAsync();
 
-            _input = new MonogameInputBridge(_root, _renderer);
+            _input = new MonogameInputBridge(_root, _renderer)
+            {
+                UiWantsPointer = () => _worldUiHovered || _uiRenderer?.WantsCapturePointer == true,
+            };
 
             // Mouse capture is opt-in: the host/game requests it via
             // captureMouseOnStart. Otherwise the cursor stays free until Tab/Esc
@@ -192,6 +206,36 @@ namespace V12.Monogame
             }
         }
 
+        private void OnTextInput(object? sender, TextInputEventArgs e)
+        {
+            _uiRenderer?.QueueText(e.Character);
+        }
+
+        private void UpdateWorldCanvasPointer(bool active)
+        {
+            var canvases = _uiRenderer?.WorldCanvases;
+            var mouse = Mouse.GetState();
+
+            long hitId = 0;
+            float pixelX = 0f, pixelY = 0f;
+            if (active && canvases != null)
+                _renderer?.TryGetWorldCanvasAt(mouse.X, mouse.Y, canvases, out hitId, out pixelX, out pixelY);
+
+            if (_hoveredWorldCanvasId != 0 &&
+                (hitId != _hoveredWorldCanvasId || !active) &&
+                canvases != null &&
+                canvases.TryGetValue(_hoveredWorldCanvasId, out var oldSurface))
+            {
+                oldSurface.FeedPointer(-10000f, -10000f, false);
+            }
+
+            _worldUiHovered = hitId != 0;
+            _hoveredWorldCanvasId = hitId;
+
+            if (hitId != 0 && canvases != null && canvases.TryGetValue(hitId, out var surface))
+                surface.FeedPointer(pixelX, pixelY, mouse.LeftButton == ButtonState.Pressed);
+        }
+
         protected override void Update(GameTime gameTime)
         {
             float deltaTime = (float)gameTime.ElapsedGameTime.TotalSeconds;
@@ -201,8 +245,6 @@ namespace V12.Monogame
                 SetMouseCapture(false);
 
             HandleMouseCapture();
-
-            _input?.Update(deltaTime, IsActive);
 
             // A window resize/maximize changes layout without a world edit, so
             // force one dirty frame (re-capture UI + re-layout) when the
@@ -215,6 +257,12 @@ namespace V12.Monogame
                 _root?.MarkRenderDirty();
             }
 
+            // Paper is immediate mode: pointer/key state must be in place before
+            // V12Tick runs the UI frame (ApplyUI + step).
+            _uiRenderer?.FeedInput(pp.BackBufferWidth, pp.BackBufferHeight, IsActive);
+            UpdateWorldCanvasPointer(IsActive);
+
+            _input?.Update(deltaTime, IsActive);
             _root?.V12Tick(deltaTime);
 
             // Network timers + queued message dispatch + remote interpolation.
@@ -222,17 +270,17 @@ namespace V12.Monogame
             _network?.ProcessPendingNetworkMessages();
             _remotePlayers?.UpdateTweens(deltaTime);
 
-            // Drive Gum (pointer/keyboard) after the frame's UI has been handed over.
-            _uiRenderer?.Update(gameTime);
-
             base.Update(gameTime);
         }
 
         protected override void Draw(GameTime gameTime)
         {
-            _renderer?.DrawFrame();
-
-            // Gum draws the UI as a 2D overlay on top of the 3D pass.
+            // The UI packet is data: world canvases are baked first, then the 3D pass
+            // fills viewport textures into the frame and draws world quads. The UI
+            // pass finally draws the same packet as a 2D overlay.
+            _uiRenderer?.BakeWorldCanvases();
+            var uiFrame = _uiRenderer?.LastFrame;
+            _renderer?.DrawFrame(uiFrame, _uiRenderer?.WorldCanvases);
             _uiRenderer?.Draw();
 
             base.Draw(gameTime);
@@ -240,6 +288,8 @@ namespace V12.Monogame
 
         protected override void UnloadContent()
         {
+            Window.TextInput -= OnTextInput;
+            _uiRenderer?.Dispose();
             _root?.Shutdown();
             base.UnloadContent();
         }
@@ -247,7 +297,7 @@ namespace V12.Monogame
         /// <summary>
         /// Esc toggles mouse capture (hidden + confined, for looking around). Tab is free for the game.
         /// Capture is deliberately NOT bound to left-click, so left-click stays free to press
-        /// Gum UI controls. Movement keys work either way.
+        /// Paper UI controls. Movement keys work either way.
         /// </summary>
         private void HandleMouseCapture()
         {

@@ -19,6 +19,15 @@ namespace V12.Monogame
             using var game = new V12Game(configureServices, network, afterInitialize, captureMouseOnStart);
             game.Run();
         }
+        public static void RunWithGamepak(
+            Action<GameRoot> configureServices,
+            MonogameNetworkOptions? network = null,
+            Action<GameRoot>? afterInitialize = null,
+            bool captureMouseOnStart = false)
+        {
+            using var game = new V12Game(configureServices, network, afterInitialize, captureMouseOnStart);
+            game.Run();
+        }
     }
 
     /// <summary>

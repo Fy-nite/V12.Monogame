@@ -4,17 +4,27 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <PackageId>V12.Monogame</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Charlie-san; Finite</Authors>
+    <Description>V12 MonoGame/Pulsar renderer and host for .v12pak games</Description>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.3">
       <PrivateAssets>All</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Gum.MonoGame" Version="2026.10.1.1" />
+
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="$(V12BasicProject)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Paper\PaperEffect.mgfxo" LogicalName="V12.Monogame.Paper.PaperEffect.mgfxo" />
   </ItemGroup>
 
 </Project>

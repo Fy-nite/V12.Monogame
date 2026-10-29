@@ -7,6 +7,7 @@
   -->
   <PropertyGroup>
     <V12BasicProject Condition="'$(V12BasicProject)' == ''">$(MSBuildThisFileDirectory)libs/V12.Basic/V12.Basic.csproj</V12BasicProject>
+    <V12PakProject Condition="'$(V12PakProject)' == ''">$(MSBuildThisFileDirectory)libs/V12.Pak/V12.Pak.csproj</V12PakProject>
   </PropertyGroup>
 
   <!--
