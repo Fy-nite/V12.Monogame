@@ -21,6 +21,8 @@ namespace V12.Monogame.Paper
         private const string EffectResource = "V12.Monogame.Paper.PaperEffect.mgfxo";
 
         private readonly GraphicsDevice _gd;
+        private readonly MonogamePaperTextureRenderer? _defaultTextures;
+        private MonogamePaperTextureRenderer? _drawTextures;
         private readonly Effect _effect;
         private readonly Texture2D _white;
         private readonly EffectParameter? _viewportSize;
@@ -59,9 +61,10 @@ namespace V12.Monogame.Paper
             AlphaBlendFunction = BlendFunction.Add,
         };
 
-        public MonogamePaperFrameRenderer(GraphicsDevice graphicsDevice)
+        public MonogamePaperFrameRenderer(GraphicsDevice graphicsDevice, MonogamePaperTextureRenderer? textures = null)
         {
             _gd = graphicsDevice ?? throw new ArgumentNullException(nameof(graphicsDevice));
+            _defaultTextures = textures;
             _effect = LoadEffect(graphicsDevice);
             _white = new Texture2D(graphicsDevice, 1, 1, false, SurfaceFormat.Color);
             _white.SetData(new[] { XnaColor.White });
@@ -95,9 +98,10 @@ namespace V12.Monogame.Paper
             return new Effect(graphicsDevice, memory.ToArray());
         }
 
-        public void Draw(PaperFrame? frame)
+        public void Draw(PaperFrame? frame, MonogamePaperTextureRenderer? textures = null)
         {
             if (frame == null || frame.Meshes.Count == 0) return;
+            _drawTextures = textures ?? _defaultTextures;
             if (!BuildBuffers(frame)) return;
 
             int vertexCount = _vertexCount;
@@ -128,22 +132,10 @@ namespace V12.Monogame.Paper
             float scale = frame.FramebufferScale <= 0f ? 1f : frame.FramebufferScale;
             _viewportSize?.SetValue(new XnaVector2(frame.Width * scale, frame.Height * scale));
 
+            SetDefaultUniforms();
+
             foreach (var d in _draws)
             {
-                _scissorTransform?.SetValue(d.ScissorTransform);
-                _scissorTranslation?.SetValue(d.ScissorTranslation);
-                _scissorExt?.SetValue(d.ScissorExt);
-                _brushTransform?.SetValue(d.BrushTransform);
-                _brushTranslation?.SetValue(d.BrushTranslation);
-                _brushType?.SetValue(d.BrushType);
-                _brushColor1?.SetValue(d.BrushColor1);
-                _brushColor2?.SetValue(d.BrushColor2);
-                _brushParams?.SetValue(d.BrushParams);
-                _brushParams2?.SetValue(d.BrushParams2);
-                _textureTransform?.SetValue(d.TextureTransform);
-                _textureTranslation?.SetValue(d.TextureTranslation);
-                _atlasTexelSize?.SetValue(d.AtlasTexel);
-                _sdfPxRange?.SetValue(d.SdfRange);
                 _tex0?.SetValue(d.Texture ?? _white);
                 _fontTex?.SetValue(d.FontTexture ?? _white);
 
@@ -159,6 +151,29 @@ namespace V12.Monogame.Paper
             }
 
             _gd.SetVertexBuffer(null);
+        }
+
+        /// <summary>
+        /// PaperMesh is the simplified bridge: brush/scissor/texture matrices
+        /// do not travel per mesh. Feed identity state so the shared effect
+        /// still draws the base vertex colors, texture and font atlas.
+        /// </summary>
+        private void SetDefaultUniforms()
+        {
+            _scissorTransform?.SetValue(new XnaVector4(1f, 0f, 0f, 1f));
+            _scissorTranslation?.SetValue(XnaVector2.Zero);
+            _scissorExt?.SetValue(new XnaVector2(-1f, -1f));
+            _brushTransform?.SetValue(new XnaVector4(1f, 0f, 0f, 1f));
+            _brushTranslation?.SetValue(XnaVector2.Zero);
+            _brushType?.SetValue(0);
+            _brushColor1?.SetValue(XnaVector4.One);
+            _brushColor2?.SetValue(XnaVector4.One);
+            _brushParams?.SetValue(XnaVector4.Zero);
+            _brushParams2?.SetValue(XnaVector2.Zero);
+            _textureTransform?.SetValue(new XnaVector4(1f, 0f, 0f, 1f));
+            _textureTranslation?.SetValue(XnaVector2.Zero);
+            _atlasTexelSize?.SetValue(new XnaVector2(1f, 1f));
+            _sdfPxRange?.SetValue(4f);
         }
 
         private bool BuildBuffers(PaperFrame frame)
@@ -197,24 +212,8 @@ namespace V12.Monogame.Paper
                 {
                     Start = indexOffset,
                     Count = count,
-                    ScissorTransform = ToVector4(mesh.ScissorTransform),
-                    ScissorTranslation = ToVector2(mesh.ScissorTranslation),
-                    ScissorExt = ToVector2(mesh.ScissorExtent),
-                    BrushTransform = ToVector4(mesh.BrushTransform),
-                    BrushTranslation = ToVector2(mesh.BrushTranslation),
-                    BrushType = mesh.BrushState.Type,
-                    BrushColor1 = ToColor(mesh.BrushState.Color1),
-                    BrushColor2 = ToColor(mesh.BrushState.Color2),
-                    BrushParams = new XnaVector4(
-                        mesh.BrushState.Point1.X, mesh.BrushState.Point1.Y,
-                        mesh.BrushState.Point2.X, mesh.BrushState.Point2.Y),
-                    BrushParams2 = new XnaVector2(mesh.BrushState.CornerRadii, mesh.BrushState.Feather),
-                    TextureTransform = ToVector4(mesh.TextureTransform),
-                    TextureTranslation = ToVector2(mesh.TextureTranslation),
-                    AtlasTexel = ToVector2(mesh.AtlasTexelSize),
-                    SdfRange = mesh.SdfPxRange,
-                    Texture = ResolveTexture(mesh, frame),
-                    FontTexture = mesh.FontAtlasObject as Texture2D,
+                    Texture = ResolveTexture(mesh),
+                    FontTexture = ResolveFontTexture(mesh),
                 });
 
                 indexOffset += count;
@@ -225,25 +224,17 @@ namespace V12.Monogame.Paper
             return _draws.Count > 0;
         }
 
-        private static Texture2D? ResolveTexture(PaperMesh mesh, PaperFrame frame)
-        {
-            if (mesh.ViewportId != 0)
-            {
-                for (int i = 0; i < frame.Viewports.Count; i++)
-                    if (frame.Viewports[i].Id == mesh.ViewportId)
-                        return frame.Viewports[i].Texture as Texture2D;
-                return null;
-            }
-            return mesh.TextureObject as Texture2D;
-        }
+        private Texture2D? ResolveTexture(PaperMesh mesh)
+            => _drawTextures != null && _drawTextures.TryGetTexture(mesh.TextureId, out var texture)
+                ? texture
+                : null;
+
+        private Texture2D? ResolveFontTexture(PaperMesh mesh)
+            => _drawTextures != null && _drawTextures.TryGetTexture(mesh.FontAtlasId, out var texture)
+                ? texture
+                : null;
 
         private static XnaVector2 ToVector2(System.Numerics.Vector2 v) => new(v.X, v.Y);
-        private static XnaVector4 ToVector4(System.Numerics.Vector4 v) => new(v.X, v.Y, v.Z, v.W);
-        private static XnaVector4 ToColor(uint rgba) => new(
-            (rgba & 0xFF) / 255f,
-            ((rgba >> 8) & 0xFF) / 255f,
-            ((rgba >> 16) & 0xFF) / 255f,
-            ((rgba >> 24) & 0xFF) / 255f);
 
         public void Dispose()
         {
@@ -257,20 +248,6 @@ namespace V12.Monogame.Paper
         {
             public int Start;
             public int Count;
-            public XnaVector4 ScissorTransform;
-            public XnaVector2 ScissorTranslation;
-            public XnaVector2 ScissorExt;
-            public XnaVector4 BrushTransform;
-            public XnaVector2 BrushTranslation;
-            public int BrushType;
-            public XnaVector4 BrushColor1;
-            public XnaVector4 BrushColor2;
-            public XnaVector4 BrushParams;
-            public XnaVector2 BrushParams2;
-            public XnaVector4 TextureTransform;
-            public XnaVector2 TextureTranslation;
-            public XnaVector2 AtlasTexel;
-            public float SdfRange;
             public Texture2D? Texture;
             public Texture2D? FontTexture;
         }

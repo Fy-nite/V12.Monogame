@@ -88,8 +88,8 @@ namespace V12.Monogame
         {
             base.Initialize();
 
-            // Same one-time serializer registration Nova performs in V12Runtime:
-            // without it every V12 BSON type is rejected by ObjectSerializer.
+            // One-time serializer registration: without it every V12 BSON type
+            // is rejected by ObjectSerializer.
             BsonConfig.Initialize();
             if (!GameRoot.LoggingConfigured) GameRoot.ConfigureLogging();
 
@@ -100,13 +100,14 @@ namespace V12.Monogame
             _renderer = new MonogameV12Renderer(GraphicsDevice, _root);
             _root.Registry.Register("IRenderer", _renderer);
 
-            // Paper/Origami UI renderer — registered before Initialize so GameRoot
+            // Canvas UI renderer: registered before Initialize so GameRoot
             // resolves it and hands it the captured UIFrame each dirty frame.
             var pp = GraphicsDevice.PresentationParameters;
             _uiRenderer = new MonogamePaperUIRenderer(
                 GraphicsDevice,
                 Math.Max(1, pp.BackBufferWidth),
                 Math.Max(1, pp.BackBufferHeight));
+            _uiRenderer.SetViewportTextureProvider(id => _renderer.GetViewportTexture(id));
             // GameRoot's constructor installs a headless Paper renderer by default;
             // this host supplies the MonoGame canvas backend instead.
             _root.Registry.RegisterOrReplace("IUIRenderer", _uiRenderer);
@@ -133,8 +134,8 @@ namespace V12.Monogame
             if (_remotePlayers != null)
                 _remotePlayers.LocalWorldName = _root.SelectedWorld?.WorldName ?? "";
 
-            // Server mode starts listening immediately (client mode stays idle
-            // until the game UI triggers NetworkClient.ConnectAsync) — Nova parity.
+            // Server mode starts listening immediately; client mode stays idle
+            // until the game UI triggers NetworkClient.ConnectAsync.
             if (_root.Registry.Get<NetworkHost>("NetworkHost") != null)
                 _root.StartNetworkingAsync();
 
@@ -311,7 +312,7 @@ namespace V12.Monogame
                 Console.WriteLine("[V12Game] Esc toggles mouse capture; Tab opens the menu; WASD to move.");
             }
 
-            // Esc toggles capture (Nova-like: captured from the start).
+            // Esc toggles capture (the cursor is captured from the start).
             bool escapeDown = keys.IsKeyDown(Keys.Escape);
             if (escapeDown && !_escapeWasDown)
                 SetMouseCapture(!_renderer.LockMouse);

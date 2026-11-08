@@ -9,7 +9,7 @@ using V12.Core.UI.Paper;
 namespace V12.Monogame.Paper
 {
     /// <summary>
-    /// Texture provider for Paper/Quill on MonoGame. It only creates and updates
+    /// Texture provider for the Paper canvas on MonoGame. It only creates and updates
     /// <see cref="Texture2D"/> handles; all UI geometry comes back as a
     /// <see cref="PaperFrame"/> for <see cref="MonogamePaperFrameRenderer"/>.
     /// </summary>
@@ -17,6 +17,7 @@ namespace V12.Monogame.Paper
     {
         private readonly GraphicsDevice _gd;
         private readonly List<Texture2D> _owned = new();
+        private readonly Dictionary<string, Texture2D> _byId = new();
 
         public MonogamePaperTextureRenderer(GraphicsDevice graphicsDevice)
         {
@@ -27,13 +28,30 @@ namespace V12.Monogame.Paper
         {
             var texture = new Texture2D(_gd, Math.Max(1, (int)width), Math.Max(1, (int)height), false, SurfaceFormat.Color);
             _owned.Add(texture);
+            // PaperMesh carries the texture object hash as a string id.
+            _byId[texture.GetHashCode().ToString()] = texture;
             return texture;
+        }
+
+        /// <summary>Resolve a <see cref="PaperMesh.TextureId"/>/<see cref="PaperMesh.FontAtlasId"/> hash.</summary>
+        public bool TryGetTexture(string? id, out Texture2D texture)
+        {
+            texture = null!;
+            return !string.IsNullOrEmpty(id) && _byId.TryGetValue(id, out texture);
+        }
+
+        /// <summary>Register a host-owned texture (e.g. a 3D viewport render
+        /// target) so PaperMesh hash ids can resolve it. Ownership stays with
+        /// the caller.</summary>
+        public void RegisterTexture(Texture2D texture)
+        {
+            if (texture == null) return;
+            _byId[texture.GetHashCode().ToString()] = texture;
         }
 
         public override Int2 GetTextureSize(object texture)
         {
             if (texture is Texture2D t) return new Int2(t.Width, t.Height);
-            if (texture is PaperViewportTexture vp && vp.Id != 0) return new Int2(1, 1);
             return base.GetTextureSize(texture);
         }
 
@@ -83,6 +101,7 @@ namespace V12.Monogame.Paper
             foreach (var texture in _owned)
                 if (!texture.IsDisposed) texture.Dispose();
             _owned.Clear();
+            _byId.Clear();
         }
     }
 }

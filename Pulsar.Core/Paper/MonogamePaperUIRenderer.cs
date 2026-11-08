@@ -12,7 +12,7 @@ using XnaRectangle = Microsoft.Xna.Framework.Rectangle;
 namespace V12.Monogame.Paper
 {
     /// <summary>
-    /// MonoGame host for the engine's Paper/Origami UI. The core renderer turns the UI
+    /// MonoGame host for the engine's canvas UI. The core renderer turns the UI
     /// tree into a <see cref="PaperFrame"/> (array meshes + draw state + viewport
     /// descriptors); this host only supplies textures, feeds input, and hands the
     /// packet to <see cref="MonogamePaperFrameRenderer"/> after the 3D pass.
@@ -32,7 +32,7 @@ namespace V12.Monogame.Paper
         {
             _gd = graphicsDevice;
             _textures = new MonogamePaperTextureRenderer(graphicsDevice);
-            _frameRenderer = new MonogamePaperFrameRenderer(graphicsDevice);
+            _frameRenderer = new MonogamePaperFrameRenderer(graphicsDevice, _textures);
             _width = Math.Max(1, width);
             _height = Math.Max(1, height);
             _textures.SetViewport(_width, _height);
@@ -83,7 +83,7 @@ namespace V12.Monogame.Paper
                 _gd.SetRenderTarget(rt);
                 _gd.Viewport = new Viewport(0, 0, width, height);
                 _gd.Clear(Color.Transparent);
-                _frameRenderer.Draw(surface.LastFrame);
+                _frameRenderer.Draw(surface.LastFrame, surface.Renderer as MonogamePaperTextureRenderer);
                 surface.Texture = rt;
             }
 
@@ -131,47 +131,67 @@ namespace V12.Monogame.Paper
         public bool TryGetViewportRect(long id, out XnaRectangle rect, out XnaColor color)
         {
             rect = default;
-            color = default;
-            if (!_paper.TryGetViewportRect(id, out var r, out var c)) return false;
+            color = XnaColor.White;
+            var frame = _paper.LastPaperFrame;
+            if (frame == null) return false;
 
-            float w = r.Max.X - r.Min.X;
-            float h = r.Max.Y - r.Min.Y;
-            if (w <= 0f || h <= 0f) return false;
+            foreach (var viewport in frame.Viewports)
+            {
+                if (viewport.Id != id) continue;
+                if (viewport.Rect.Z <= 0f || viewport.Rect.W <= 0f) return false;
+                rect = new XnaRectangle(
+                    (int)MathF.Round(viewport.Rect.X),
+                    (int)MathF.Round(viewport.Rect.Y),
+                    (int)MathF.Round(viewport.Rect.Z),
+                    (int)MathF.Round(viewport.Rect.W));
+                return true;
+            }
 
-            rect = new XnaRectangle(
-                (int)MathF.Round(r.Min.X),
-                (int)MathF.Round(r.Min.Y),
-                (int)MathF.Round(w),
-                (int)MathF.Round(h));
-            color = new XnaColor(c.R, c.G, c.B, c.A);
-            return true;
+            return false;
         }
 
         public bool TryGetViewportAt(Point position, out long id, out XnaRectangle rect)
         {
             id = 0;
             rect = default;
+            var frame = _paper.LastPaperFrame;
+            if (frame == null) return false;
+
             int bestArea = int.MaxValue;
-            foreach (var pair in _paper.ViewportRects)
+            foreach (var viewport in frame.Viewports)
             {
-                var r = pair.Value;
-                float w = r.Max.X - r.Min.X;
-                float h = r.Max.Y - r.Min.Y;
+                float w = viewport.Rect.Z;
+                float h = viewport.Rect.W;
                 if (w <= 0f || h <= 0f) continue;
-                if (position.X < r.Min.X || position.Y < r.Min.Y ||
-                    position.X >= r.Max.X || position.Y >= r.Max.Y) continue;
+
+                float x = viewport.Rect.X;
+                float y = viewport.Rect.Y;
+                if (position.X < x || position.Y < y ||
+                    position.X >= x + w || position.Y >= y + h) continue;
 
                 int area = (int)(w * h);
                 if (area >= bestArea) continue;
                 bestArea = area;
-                id = pair.Key;
+                id = viewport.Id;
                 rect = new XnaRectangle(
-                    (int)MathF.Round(r.Min.X),
-                    (int)MathF.Round(r.Min.Y),
+                    (int)MathF.Round(x),
+                    (int)MathF.Round(y),
                     (int)MathF.Round(w),
                     (int)MathF.Round(h));
             }
             return id != 0;
+        }
+
+        /// <summary>Wire the 3D renderer's viewport textures into the Paper UI
+        /// viewport nodes. The render targets are owned by the 3D renderer.</summary>
+        public void SetViewportTextureProvider(Func<long, Texture2D?> provider)
+        {
+            _paper.ViewportTextureProvider = id =>
+            {
+                var texture = provider(id);
+                if (texture != null) _textures.RegisterTexture(texture);
+                return texture;
+            };
         }
 
         public void Dispose()

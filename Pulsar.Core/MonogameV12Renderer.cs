@@ -107,9 +107,9 @@ namespace V12.Monogame
         // ── Hierarchy mirror ─────────────────────────────────────────────
         // V12 determines placement; this renderer mirrors the element tree
         // from packet.Nodes (element id → parent id + element-local matrix)
-        // and composes world matrices itself — the Godot tree accumulates the
-        // same way. Meshes add their mesh-local offset on top. Rebuilt every
-        // time a packet arrives (packets only arrive on change).
+        // and composes world matrices itself, the same way a scene tree
+        // accumulates transforms. Meshes add their mesh-local offset on top.
+        // Rebuilt every time a packet arrives (packets only arrive on change).
         private readonly Dictionary<long, System.Numerics.Matrix4x4> _mirrorWorlds = new();
 
         private bool _lockMouse;
@@ -314,7 +314,9 @@ namespace V12.Monogame
                 locals[n.ElementId] = (n.ParentId, n.Local);
             var resolving = new HashSet<long>();
             foreach (var n in packet.Nodes)
-                _mirrorWorlds[n.ElementId] = ResolveNodeWorld(n.ElementId, locals, resolving);
+                _mirrorWorlds[n.ElementId] = n.HasWorld
+                    ? n.World
+                    : ResolveNodeWorld(n.ElementId, locals, resolving);
         }
 
         private System.Numerics.Matrix4x4 ResolveNodeWorld(long id,
@@ -333,12 +335,13 @@ namespace V12.Monogame
             return world;
         }
 
-        /// <summary>Fully composed mesh world matrix from the mirror.
-        /// Meshes carry no transforms — placement lives only on elements —
-        /// so this is the element's world. Falls back to identity when the
-        /// element is absent (stale packet).</summary>
+        /// <summary>Fully composed mesh world matrix. V12 supplies it on the
+        /// draw when available; otherwise fall back to the hierarchy mirror
+        /// (older/single-item packets), then identity.</summary>
         private System.Numerics.Matrix4x4 MeshDrawWorld(MeshDraw draw)
         {
+            if (draw.HasWorld)
+                return draw.World;
             if (_mirrorWorlds.TryGetValue(draw.ElementId, out var elementWorld))
                 return elementWorld;
             return System.Numerics.Matrix4x4.Identity;
@@ -411,6 +414,13 @@ namespace V12.Monogame
                 }
             }
 
+            // Meshes routed to a world viewport that this host has no panel for
+            // (a standalone run of a scene authored with an editor viewport) are
+            // drawn to the main screen instead of being dropped.
+            var mainMeshes = new List<MeshDraw>();
+            if (groups.TryGetValue(0, out var mainGroup))
+                mainMeshes.AddRange(mainGroup);
+
             // Pass 1: viewport groups — render each into its own RenderTarget2D sized
             // to the viewport panel Paper laid out. The UI packet carries the rect and
             // receives the finished texture back for the UI draw pass.
@@ -418,7 +428,11 @@ namespace V12.Monogame
             {
                 if (group.Key == 0) continue;
                 var viewport = FindViewport(uiFrame, group.Key);
-                if (viewport == null) continue;
+                if (viewport == null)
+                {
+                    mainMeshes.AddRange(group.Value);
+                    continue;
+                }
 
                 int vpWidth = (int)MathF.Round(viewport.Rect.Z);
                 int vpHeight = (int)MathF.Round(viewport.Rect.W);
@@ -428,7 +442,7 @@ namespace V12.Monogame
                 viewport.Texture = rt;
                 _gd.SetRenderTarget(rt);
                 _gd.Viewport = new Viewport(0, 0, rt.Width, rt.Height);
-                _gd.Clear(Unpack(viewport.Color));
+                _gd.Clear(_env.ClearColor);
                 _gd.DepthStencilState = DepthStencilState.Default;
                 // Explicit: the previous UI/2D pass can leave a culling state behind
                 // that flips V12's faces (inside-out look).
@@ -445,7 +459,8 @@ namespace V12.Monogame
                 _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
             }
 
-            // Pass 2: main screen meshes (ViewportId == 0).
+            // Pass 2: main screen meshes (ViewportId 0 plus any world viewport
+            // this host has no panel for).
             _gd.SetRenderTarget(null);
             _gd.Viewport = new Viewport(0, 0, _gd.PresentationParameters.BackBufferWidth, _gd.PresentationParameters.BackBufferHeight);
             // Dark editor backdrop (UI panels are transparent; cornflower would shine through).
@@ -462,7 +477,7 @@ namespace V12.Monogame
                 _loggedFirstFrame = true;
                 Console.WriteLine($"[MonogameRenderer] first frame: {packet?.Meshes.Count ?? 0} mesh(es), camera '{_lastCameraName}'");
             }
-            if (groups.TryGetValue(0, out var mainMeshes))
+            if (mainMeshes.Count > 0)
                 DrawMeshes(mainMeshes, view, projection);
             DrawWorldQuads(view, projection, worldCanvases);
             // Overlay intentionally not invoked on the main pass: the editor
@@ -678,29 +693,24 @@ namespace V12.Monogame
             _effect.TextureEnabled = false;
             _effect.Texture = null;
             _effect.DiffuseColor = Vector3.One;
-            // Crisp texel edges for blocky albedo maps (Minecraft-style
-            // pixels); linear would smear them at oblique angles.
-            _gd.SamplerStates[0] = SamplerState.PointClamp;
+            // Wrap, not clamp: UVs are baked with the material's tile scale.
+            // Linear + mipmaps keeps tiled albedo stable at a distance.
+            _gd.SamplerStates[0] = SamplerState.LinearWrap;
 
             foreach (var draw in meshes)
             {
                 var mesh = draw.Mesh;
                 if (mesh == null) continue;
 
-                var gpu = GetOrBuildGpuMesh(mesh);
+                var gpu = GetOrBuildGpuMesh(draw);
                 if (gpu == null) continue;
 
-                // Per-mesh draw flags from the owner's MaterialComponent:
-                // gizmo handles render flat and on top, everything else stays
-                // lit and depth-tested. pass.Apply() below picks the change up.
-                ResolveDrawFlags(mesh, out bool unlit, out bool noDepth);
-                _effect.LightingEnabled = !unlit;
-                _gd.DepthStencilState = noDepth ? DepthStencilState.None : DepthStencilState.Default;
+                // Draw flags and albedo texture come from the packet MeshDraw.
+                // The renderer never reads MaterialComponent from the world.
+                _effect.LightingEnabled = !draw.Unlit;
+                _gd.DepthStencilState = draw.NoDepthTest ? DepthStencilState.None : DepthStencilState.Default;
 
-                // Per-mesh albedo texture from the owner's MaterialComponent
-                // (same lookup ResolveColor uses). Untextured or unresolvable
-                // paths fall back to the flat vertex colour.
-                var texture = ResolveTexture(ResolveMaterial(mesh)?.PrimaryTexture);
+                var texture = ResolveTexture(draw.TexturePath);
                 _effect.TextureEnabled = texture != null;
                 _effect.Texture = texture;
 
@@ -950,19 +960,23 @@ namespace V12.Monogame
             }
         }
 
-        private GpuMesh? GetOrBuildGpuMesh(IMeshRenderable mesh)
+        private GpuMesh? GetOrBuildGpuMesh(in MeshDraw draw)
         {
+            var mesh = draw.Mesh;
+            if (mesh == null) return null;
             var points = mesh.MeshPoints;
             var indices = mesh.Indices;
             if (points == null || indices == null || points.Length < 9 || indices.Length < 3)
                 return null;
 
-            var color = ResolveColor(mesh);
-            var material = ResolveMaterial(mesh);
-            float uvScaleX = material?.Uv1ScaleX ?? 1f;
-            float uvScaleY = material?.Uv1ScaleY ?? 1f;
-            float uvOffsetX = material?.Uv1OffsetX ?? 0f;
-            float uvOffsetY = material?.Uv1OffsetY ?? 0f;
+            var color = new Color(draw.Albedo.R, draw.Albedo.G, draw.Albedo.B, draw.Albedo.A);
+            var uvScale = draw.UvScale.X == 0f && draw.UvScale.Y == 0f
+                ? Vector2.One
+                : draw.UvScale;
+            float uvScaleX = uvScale.X;
+            float uvScaleY = uvScale.Y;
+            float uvOffsetX = draw.UvOffset.X;
+            float uvOffsetY = draw.UvOffset.Y;
             // Identity, not length: mesh data arrays are replaced — never
             // mutated in place — so a new array is new geometry even at equal
             // lengths. A length-only key renders stale geometry forever
@@ -1057,23 +1071,6 @@ namespace V12.Monogame
             return gpu;
         }
 
-        private static Color ResolveColor(IMeshRenderable mesh)
-        {
-            var material = ResolveMaterial(mesh);
-            if (material != null)
-                return new Color(material.R, material.G, material.B, material.A);
-            return new Color(0.8f, 0.8f, 0.8f, 1f);
-        }
-
-        /// <summary>The owner element's MaterialComponent, or null (same
-        /// lookup path every material-driven decision uses).</summary>
-        private static MaterialComponent? ResolveMaterial(IMeshRenderable mesh)
-        {
-            if (mesh is ComponentBase component && component.Owner != null)
-                return component.Owner.GetComponent<MaterialComponent>();
-            return null;
-        }
-
         /// <summary>
         /// GPU texture for an albedo path, or null. Paths resolve through the
         /// engine's asset resolver (v12:// URIs and pak-mount-relative paths)
@@ -1093,7 +1090,7 @@ namespace V12.Monogame
             try
             {
                 using var stream = File.OpenRead(resolved);
-                texture = Texture2D.FromStream(_gd, stream);
+                texture = LoadTextureWithMipmaps(stream);
             }
             catch (Exception ex)
             {
@@ -1103,27 +1100,89 @@ namespace V12.Monogame
             return texture;
         }
 
+        /// <summary>
+        /// Decodes an image and builds a full mip chain. Texture2D.FromStream
+        /// returns a single-level texture, so tiled albedo maps alias badly at
+        /// distance; box-filtered levels keep them stable instead.
+        /// </summary>
+        private Texture2D LoadTextureWithMipmaps(Stream stream)
+        {
+            using var source = Texture2D.FromStream(_gd, stream);
+            int width = source.Width;
+            int height = source.Height;
+            var level0 = new Color[width * height];
+            source.GetData(level0);
+
+            var texture = new Texture2D(_gd, width, height, true, SurfaceFormat.Color);
+            texture.SetData(0, null, level0, 0, level0.Length);
+
+            var previous = level0;
+            int previousWidth = width;
+            int previousHeight = height;
+            for (int level = 1; level < texture.LevelCount; level++)
+            {
+                int levelWidth = Math.Max(1, previousWidth / 2);
+                int levelHeight = Math.Max(1, previousHeight / 2);
+                var next = new Color[levelWidth * levelHeight];
+
+                for (int y = 0; y < levelHeight; y++)
+                {
+                    int y0 = Math.Min(y * 2, previousHeight - 1);
+                    int y1 = Math.Min(y * 2 + 1, previousHeight - 1);
+                    for (int x = 0; x < levelWidth; x++)
+                    {
+                        int x0 = Math.Min(x * 2, previousWidth - 1);
+                        int x1 = Math.Min(x * 2 + 1, previousWidth - 1);
+                        var a = previous[y0 * previousWidth + x0];
+                        var b = previous[y0 * previousWidth + x1];
+                        var c = previous[y1 * previousWidth + x0];
+                        var d = previous[y1 * previousWidth + x1];
+                        next[y * levelWidth + x] = new Color(
+                            (a.R + b.R + c.R + d.R) / 4,
+                            (a.G + b.G + c.G + d.G) / 4,
+                            (a.B + b.B + c.B + d.B) / 4,
+                            (a.A + b.A + c.A + d.A) / 4);
+                    }
+                }
+
+                texture.SetData(level, null, next, 0, next.Length);
+                previous = next;
+                previousWidth = levelWidth;
+                previousHeight = levelHeight;
+            }
+
+            return texture;
+        }
+
         /// <summary>Material texture path → existing absolute file path, or null.</summary>
         private string? ResolveTexturePath(string path)
         {
+            if (string.IsNullOrWhiteSpace(path)) return null;
             var resolver = _root?.Registry?.Get<IAssetResolver>();
 
+            // URI and mount-relative paths go through the active resolver.
+            // The pak resolver implements IAssetResolver but not the older
+            // concrete resolver, so a type check would skip pak-mounted
+            // textures entirely.
+            string candidate = path;
             if (path.StartsWith("v12://", StringComparison.OrdinalIgnoreCase))
-            {
-                var resolved = resolver?.Resolve(path) ?? path;
-                return File.Exists(resolved) ? resolved : null;
-            }
+                candidate = resolver?.Resolve(path) ?? path;
+            else if (path.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+                candidate = resolver?.Resolve("v12://" + path.Substring("res://".Length).TrimStart('/')) ?? path;
+            else if (!Path.IsPathRooted(path) && resolver != null)
+                candidate = resolver.Resolve("v12://" + path.TrimStart('/'));
 
-            if (Path.IsPathRooted(path))
-                return File.Exists(path) ? path : null;
+            if (File.Exists(candidate))
+                return candidate;
 
-            // Relative: check against every mounted pak root, then raw CWD.
-            if (resolver is V12AssetResolver mounts)
+            // Legacy concrete resolver: resolve relative to every mount.
+            if (!Path.IsPathRooted(path) && resolver is V12AssetResolver mounts)
             {
                 var relative = mounts.ResolveRelative(path);
                 if (!string.Equals(relative, path, StringComparison.Ordinal) && File.Exists(relative))
                     return relative;
             }
+
             return File.Exists(path) ? path : null;
         }
 
@@ -1183,11 +1242,5 @@ namespace V12.Monogame
             }
         }
 
-        private static void ResolveDrawFlags(IMeshRenderable mesh, out bool unlit, out bool noDepthTest)
-        {
-            var material = ResolveMaterial(mesh);
-            unlit = material?.Unlit ?? false;
-            noDepthTest = material?.NoDepthTest ?? false;
-        }
     }
 }
