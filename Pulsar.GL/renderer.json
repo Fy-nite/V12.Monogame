@@ -1,0 +1,18 @@
+{
+    "schemaVersion":  1,
+    "id":  "monogame",
+    "name":  "V12 MonoGame",
+    "version":  "1.0.0",
+    "kind":  "monogame",
+    "distribution":  "dotnet-singlefile",
+    "singleFile":  true,
+    "runtimeIdentifier":  "win-x64",
+    "selfContained":  true,
+    "executable":  "Pulsar.GL.exe",
+    "arguments":  [
+
+                  ],
+    "sourceProject":  "V12.Monogame/Pulsar.GL/Pulsar.GL.csproj",
+    "publishedAtUtc":  "2026-10-29T16:04:55.4668907Z",
+    "gamePakMode":  "sibling"
+}

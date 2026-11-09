@@ -42,3 +42,6 @@ Desktop.ini
 ## Contract LSP tooling (regenerate with install-v12-coi.ps1)
 .purr/
 *.coi
+
+# Reserved DOS device names created by `> nul` in a non-cmd shell.
+nul
