@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <ProjectReference Include="$(V12BasicProject)" />
+    <!-- Paper is the optional UI package: its renderer/surface types moved out
+         of the engine so the engine and contract stay toolkit-free. -->
+    <ProjectReference Include="$(V12PaperProject)" />
   </ItemGroup>
 
   <ItemGroup>

@@ -191,7 +191,7 @@ namespace V12.Monogame.Paper
                 _vertices[i] = new PaperVertex(
                     ToVector2(first.Positions[i]),
                     ToVector2(first.UVs[i]),
-                    new XnaColor(c.R, c.G, c.B, c.A));
+                    new XnaColor(c.X, c.Y, c.Z, c.W));
             }
 
             int totalIndices = 0;
